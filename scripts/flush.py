@@ -1,27 +1,28 @@
 """
 Memory flush agent - extracts important knowledge from conversation context.
 
-Spawned by session-end.py or pre-compact.py as a background process. Reads
-pre-extracted conversation context from a .md file, uses the Claude Agent SDK
+Spawned by the Codex Stop hook as a background process. Reads pre-extracted
+conversation context from a .md file, uses non-interactive Codex CLI execution
 to decide what's worth saving, and appends the result to today's daily log.
 
 Usage:
-    uv run python flush.py <context_file.md> <session_id>
+    python3 scripts/flush.py <context_file.md> <session_id> [turn_id]
 """
 
 from __future__ import annotations
 
-# Recursion prevention: set this BEFORE any imports that might trigger Claude
+# Recursion prevention: set this BEFORE any imports that might trigger Codex.
 import os
-os.environ["CLAUDE_INVOKED_BY"] = "memory_flush"
+os.environ["CODEX_INVOKED_BY"] = "memory_flush"
 
-import asyncio
 import json
 import logging
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+
+from llm import run_text_response
 
 ROOT = Path(__file__).resolve().parent.parent
 DAILY_DIR = ROOT / "daily"
@@ -72,19 +73,25 @@ def append_to_daily_log(content: str, section: str = "Session") -> None:
         f.write(entry)
 
 
-async def run_flush(context: str) -> str:
-    """Use Claude Agent SDK to extract important knowledge from conversation context."""
-    from claude_agent_sdk import (
-        AssistantMessage,
-        ClaudeAgentOptions,
-        ResultMessage,
-        TextBlock,
-        query,
-    )
+def read_today_log_tail(max_chars: int = 6_000) -> str:
+    """Read the tail of today's daily log to reduce duplicate flushes."""
+    today = datetime.now(timezone.utc).astimezone()
+    log_path = DAILY_DIR / f"{today.strftime('%Y-%m-%d')}.md"
+    if not log_path.exists():
+        return "(nothing saved yet today)"
+
+    content = log_path.read_text(encoding="utf-8").strip()
+    if not content:
+        return "(nothing saved yet today)"
+    return content[-max_chars:]
+
+
+def run_flush(context: str, existing_log_tail: str) -> str:
+    """Use `codex exec` to extract durable knowledge from recent context."""
 
     prompt = f"""Review the conversation context below and respond with a concise summary
 of important items that should be preserved in the daily log.
-Do NOT use any tools — just return plain text.
+Do NOT use any tools - just return plain text.
 
 Format your response as a structured daily log entry with these sections:
 
@@ -106,34 +113,33 @@ Skip anything that is:
 - Routine tool calls or file reads
 - Content that's trivial or obvious
 - Trivial back-and-forth or clarification exchanges
+- Information that is already captured in today's daily log excerpt
 
 Only include sections that have actual content. If nothing is worth saving,
 respond with exactly: FLUSH_OK
+
+## Today's Daily Log So Far
+
+{existing_log_tail}
 
 ## Conversation Context
 
 {context}"""
 
-    response = ""
-
     try:
-        async for message in query(
+        result = run_text_response(
             prompt=prompt,
-            options=ClaudeAgentOptions(
-                cwd=str(ROOT),
-                allowed_tools=[],
-                max_turns=2,
+            instructions=(
+                "You condense recent coding conversations into durable daily-log notes. "
+                "Only preserve new, high-signal information."
             ),
-        ):
-            if isinstance(message, AssistantMessage):
-                for block in message.content:
-                    if isinstance(block, TextBlock):
-                        response += block.text
-            elif isinstance(message, ResultMessage):
-                pass
+            max_output_tokens=1_500,
+            verbosity="low",
+        )
+        response = result.text
     except Exception as e:
         import traceback
-        logging.error("Agent SDK error: %s\n%s", e, traceback.format_exc())
+        logging.error("Codex CLI error: %s\n%s", e, traceback.format_exc())
         response = f"FLUSH_ERROR: {type(e).__name__}: {e}"
 
     return response
@@ -174,7 +180,7 @@ def maybe_trigger_compilation() -> None:
 
     logging.info("End-of-day compilation triggered (after %d:00)", COMPILE_AFTER_HOUR)
 
-    cmd = ["uv", "run", "--directory", str(ROOT), "python", str(compile_script)]
+    cmd = [sys.executable, str(compile_script)]
 
     kwargs: dict = {}
     if sys.platform == "win32":
@@ -191,25 +197,32 @@ def maybe_trigger_compilation() -> None:
 
 def main():
     if len(sys.argv) < 3:
-        logging.error("Usage: %s <context_file.md> <session_id>", sys.argv[0])
+        logging.error("Usage: %s <context_file.md> <session_id> [turn_id]", sys.argv[0])
         sys.exit(1)
 
     context_file = Path(sys.argv[1])
     session_id = sys.argv[2]
+    turn_id = sys.argv[3] if len(sys.argv) > 3 else ""
 
-    logging.info("flush.py started for session %s, context: %s", session_id, context_file)
+    logging.info(
+        "flush.py started for session %s turn %s, context: %s",
+        session_id,
+        turn_id or "(none)",
+        context_file,
+    )
 
     if not context_file.exists():
         logging.error("Context file not found: %s", context_file)
         return
 
-    # Deduplication: skip if same session was flushed within 60 seconds
+    # Deduplication: skip if the same turn was flushed within 60 seconds.
     state = load_flush_state()
     if (
         state.get("session_id") == session_id
+        and state.get("turn_id") == turn_id
         and time.time() - state.get("timestamp", 0) < 60
     ):
-        logging.info("Skipping duplicate flush for session %s", session_id)
+        logging.info("Skipping duplicate flush for session %s turn %s", session_id, turn_id)
         context_file.unlink(missing_ok=True)
         return
 
@@ -223,14 +236,11 @@ def main():
     logging.info("Flushing session %s: %d chars", session_id, len(context))
 
     # Run the LLM extraction
-    response = asyncio.run(run_flush(context))
+    response = run_flush(context, read_today_log_tail())
 
     # Append to daily log
-    if "FLUSH_OK" in response:
+    if response.strip() == "FLUSH_OK":
         logging.info("Result: FLUSH_OK")
-        append_to_daily_log(
-            "FLUSH_OK - Nothing worth saving from this session", "Memory Flush"
-        )
     elif "FLUSH_ERROR" in response:
         logging.error("Result: %s", response)
         append_to_daily_log(response, "Memory Flush")
@@ -239,7 +249,13 @@ def main():
         append_to_daily_log(response, "Session")
 
     # Update dedup state
-    save_flush_state({"session_id": session_id, "timestamp": time.time()})
+    save_flush_state(
+        {
+            "session_id": session_id,
+            "turn_id": turn_id,
+            "timestamp": time.time(),
+        }
+    )
 
     # Clean up context file
     context_file.unlink(missing_ok=True)

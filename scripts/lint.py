@@ -5,17 +5,16 @@ Runs 7 checks: broken links, orphan pages, orphan sources, stale articles,
 contradictions (LLM), missing backlinks, and sparse articles.
 
 Usage:
-    uv run python lint.py                    # all checks
-    uv run python lint.py --structural-only  # skip LLM checks (faster, cheaper)
+    python3 scripts/lint.py                    # all checks
+    python3 scripts/lint.py --structural-only  # skip LLM checks (faster, cheaper)
 """
 
 from __future__ import annotations
 
 import argparse
-import asyncio
-from pathlib import Path
 
 from config import KNOWLEDGE_DIR, REPORTS_DIR, now_iso, today_iso
+from llm import run_text_response
 from utils import (
     count_inbound_links,
     extract_wikilinks,
@@ -24,13 +23,11 @@ from utils import (
     list_raw_files,
     list_wiki_articles,
     load_state,
+    record_usage,
     read_all_wiki_content,
     save_state,
     wiki_article_exists,
 )
-
-ROOT_DIR = Path(__file__).resolve().parent.parent
-
 
 def check_broken_links() -> list[dict]:
     """Check for [[wikilinks]] that point to non-existent articles."""
@@ -145,16 +142,8 @@ def check_sparse_articles() -> list[dict]:
     return issues
 
 
-async def check_contradictions() -> list[dict]:
+def check_contradictions() -> tuple[list[dict], object | None]:
     """Use LLM to detect contradictions across articles."""
-    from claude_agent_sdk import (
-        AssistantMessage,
-        ClaudeAgentOptions,
-        ResultMessage,
-        TextBlock,
-        query,
-    )
-
     wiki_content = read_all_wiki_content()
 
     prompt = f"""Review this knowledge base for contradictions, inconsistencies, or
@@ -179,26 +168,30 @@ If no issues found, output exactly: NO_ISSUES
 
 Do NOT output anything else - no preamble, no explanation, just the formatted lines."""
 
-    response = ""
     try:
-        async for message in query(
+        result = run_text_response(
             prompt=prompt,
-            options=ClaudeAgentOptions(
-                cwd=str(ROOT_DIR),
-                allowed_tools=[],
-                max_turns=2,
+            instructions=(
+                "You are a contradiction detector for a markdown knowledge base. Follow the "
+                "response format exactly."
             ),
-        ):
-            if isinstance(message, AssistantMessage):
-                for block in message.content:
-                    if isinstance(block, TextBlock):
-                        response += block.text
+            max_output_tokens=2_500,
+            verbosity="low",
+        )
     except Exception as e:
-        return [{"severity": "error", "check": "contradiction", "file": "(system)", "detail": f"LLM check failed: {e}"}]
+        return (
+            [{
+                "severity": "error",
+                "check": "contradiction",
+                "file": "(system)",
+                "detail": f"LLM check failed: {e}",
+            }],
+            None,
+        )
 
     issues = []
-    if "NO_ISSUES" not in response:
-        for line in response.strip().split("\n"):
+    if "NO_ISSUES" not in result.text:
+        for line in result.text.strip().split("\n"):
             line = line.strip()
             if line.startswith("CONTRADICTION:") or line.startswith("INCONSISTENCY:"):
                 issues.append({
@@ -208,7 +201,7 @@ Do NOT output anything else - no preamble, no explanation, just the formatted li
                     "detail": line,
                 })
 
-    return issues
+    return issues, result
 
 
 def generate_report(all_issues: list[dict]) -> str:
@@ -278,9 +271,13 @@ def main():
     # LLM check (costs money)
     if not args.structural_only:
         print("  Checking: Contradictions (LLM)...")
-        issues = asyncio.run(check_contradictions())
+        issues, result = check_contradictions()
         all_issues.extend(issues)
         print(f"    Found {len(issues)} issue(s)")
+        if result is not None:
+            state = load_state()
+            record_usage(state, result.usage, result.cost_usd)
+            save_state(state)
     else:
         print("  Skipping: Contradictions (--structural-only)")
 

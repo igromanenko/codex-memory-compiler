@@ -288,10 +288,11 @@ Output: a markdown report with severity levels (error, warning, suggestion).
 
 ## Full Project Structure
 
-```
+``` 
 llm-personal-kb/
-|-- .claude/
-|   |-- settings.json                # Hook configuration (auto-activates in Claude Code)
+|-- .codex/
+|   |-- config.toml                  # Enables Codex hooks + default model settings
+|   |-- hooks.json                   # Repo-local hook configuration for Codex
 |-- .gitignore                       # Excludes runtime state, temp files, caches
 |-- AGENTS.md                        # This file - schema + full technical reference
 |-- README.md                        # Concise overview + quick start
@@ -310,10 +311,10 @@ llm-personal-kb/
 |   |-- flush.py                     #   Extract memories from conversations (background)
 |   |-- config.py                    #   Path constants
 |   |-- utils.py                     #   Shared helpers
-|-- hooks/                           # Claude Code hooks
+|   |-- llm.py                       #   Codex CLI non-interactive helper
+|-- hooks/                           # Codex hooks
 |   |-- session-start.py             #   Injects knowledge into every session
-|   |-- session-end.py               #   Extracts conversation -> daily log
-|   |-- pre-compact.py               #   Safety net: captures context before compaction
+|   |-- stop.py                      #   Extracts conversation -> daily log at turn end
 |-- reports/                         # Lint reports (gitignored)
 ```
 
@@ -321,21 +322,30 @@ llm-personal-kb/
 
 ## Hook System (Automatic Capture)
 
-Hooks are configured in `.claude/settings.json` and fire automatically when you use Claude Code in this project.
+Codex discovers repo-local hooks in `.codex/hooks.json`. Hooks are currently behind a feature flag, enabled in `.codex/config.toml`. Per the current Codex docs, hooks are experimental and temporarily disabled on Windows.
 
-### `.claude/settings.json` Format
+### `.codex/config.toml`
+
+```toml
+model = "gpt-5.3-codex"
+model_reasoning_effort = "medium"
+
+[features]
+codex_hooks = true
+```
+
+### `.codex/hooks.json` Format
 
 ```json
 {
   "hooks": {
-    "SessionStart": [{ "matcher": "", "hooks": [{ "type": "command", "command": "uv run python hooks/session-start.py", "timeout": 15 }] }],
-    "PreCompact": [{ "matcher": "", "hooks": [{ "type": "command", "command": "uv run python hooks/pre-compact.py", "timeout": 10 }] }],
-    "SessionEnd": [{ "matcher": "", "hooks": [{ "type": "command", "command": "uv run python hooks/session-end.py", "timeout": 10 }] }]
+    "SessionStart": [{ "matcher": "startup|resume", "hooks": [{ "type": "command", "command": "python3 hooks/session-start.py", "timeout": 15 }] }],
+    "Stop": [{ "hooks": [{ "type": "command", "command": "python3 hooks/stop.py", "timeout": 15 }] }]
   }
 }
 ```
 
-Commands use simple relative paths from the project root. Empty `matcher` catches all events.
+Repo-local hooks are preferable because they travel with the repository and keep behavior consistent across machines. The commands resolve from the git root so they still work when Codex is launched from a subdirectory.
 
 ### Hook Details
 
@@ -343,44 +353,40 @@ Commands use simple relative paths from the project root. Empty `matcher` catche
 - Pure local I/O, no API calls, runs in under 1 second
 - Reads `knowledge/index.md` and the most recent daily log
 - Outputs JSON to stdout: `{"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "..."}}`
-- Claude sees the knowledge base index at the start of every session
+- Codex sees the knowledge base index at the start of every session
 - Max context: 20,000 characters
 
-**`session-end.py`** (SessionEnd)
-- Reads hook input from stdin (JSON with `session_id`, `transcript_path`, `cwd`)
-- Copies the raw JSONL transcript to a temp file (no parsing in the hook - keeps it fast)
-- Spawns `flush.py` as a fully detached background process
-- Recursion guard: exits immediately if `CLAUDE_INVOKED_BY` env var is set
+**`stop.py`** (Stop)
+- Reads hook input from stdin (JSON with `session_id`, `turn_id`, `transcript_path`, `cwd`)
+- Extracts a short trailing transcript window instead of waiting for session close
+- Spawns `scripts/flush.py` as a background process
+- Returns `{"continue": true}` so the current turn ends normally
+- Recursion guard: exits immediately if `CODEX_INVOKED_BY` env var is set
 
-**`pre-compact.py`** (PreCompact)
-- Same architecture as session-end.py
-- Fires before Claude Code auto-compacts the context window
-- Guards against empty `transcript_path` (known Claude Code bug #13668)
-- Critical for long sessions: captures context before summarization discards it
-
-**Why both PreCompact and SessionEnd?** Long-running sessions may trigger multiple auto-compactions before you close the session. Without PreCompact, intermediate context is lost to summarization before SessionEnd ever fires.
+**Why `Stop` instead of `SessionEnd` / `PreCompact`?** Codex currently exposes `Stop`, but not Claude-style `SessionEnd` or `PreCompact` hooks. Running memory extraction after each completed turn preserves the same architecture and intent: durable lessons are captured automatically without waiting for the session to close.
 
 ### Background Flush Process (`flush.py`)
 
-Spawned by both hooks as a fully detached background process:
+Spawned by the `Stop` hook as a background process:
 - **Windows:** `CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS` flags
 - **Mac/Linux:** `start_new_session=True`
 
-This ensures flush.py survives after Claude Code's hook process exits.
+This ensures `flush.py` survives after the hook process exits.
 
 **What flush.py does:**
-1. Sets `CLAUDE_INVOKED_BY=memory_flush` env var (prevents recursive hook firing)
+1. Sets `CODEX_INVOKED_BY=memory_flush` env var (prevents recursive hook firing)
 2. Reads the pre-extracted conversation context from the temp `.md` file
-3. Skips if context is empty or if same session was flushed within 60 seconds (deduplication)
-4. Calls Claude Agent SDK (`query()` with `allowed_tools=[]`, `max_turns=2`)
-5. Claude decides what's worth saving - returns structured bullet points or `FLUSH_OK`
-6. Appends result to `daily/YYYY-MM-DD.md`
-7. Cleans up temp context file
-8. **End-of-day auto-compilation:** If it's past 6 PM local time (`COMPILE_AFTER_HOUR = 18`) and today's daily log has changed since its last compilation (hash comparison against `state.json`), spawns `compile.py` as another detached background process. This means compilation happens automatically once a day without needing a cron job or manual trigger.
+3. Skips if context is empty or if the same `session_id + turn_id` was flushed within 60 seconds
+4. Reads the tail of today's daily log to reduce duplicate notes across adjacent turns
+5. Calls `codex exec` through `scripts/llm.py`
+6. Codex decides what's worth saving and returns structured notes or `FLUSH_OK`
+7. Appends only non-empty, non-duplicate results to `daily/YYYY-MM-DD.md`
+8. Cleans up temp context file
+9. **End-of-day auto-compilation:** If it's past 6 PM local time (`COMPILE_AFTER_HOUR = 18`) and today's daily log has changed since its last compilation (hash comparison against `state.json`), spawns `compile.py` as another detached background process. This means compilation happens automatically once a day without needing a cron job or manual trigger.
 
 ### JSONL Transcript Format
 
-Claude Code stores conversations as `.jsonl` files. Messages are nested under a `message` key:
+Codex provides a `transcript_path` in hook input. The extractor is intentionally tolerant because transcript payloads can vary by runtime version. It handles both nested and flat JSONL shapes, including:
 
 ```python
 entry = json.loads(line)
@@ -397,33 +403,31 @@ Content can be a string or a list of blocks (`{"type": "text", "text": "..."}` d
 
 ### compile.py - The Compiler
 
-Uses the Claude Agent SDK's async streaming `query()`:
+Uses `codex exec` with a JSON schema for structured output:
 
 ```python
-async for message in query(
-    prompt=compile_prompt,
-    options=ClaudeAgentOptions(
-        cwd=str(ROOT_DIR),
-        system_prompt={"type": "preset", "preset": "claude_code"},
-        allowed_tools=["Read", "Write", "Edit", "Glob", "Grep"],
-        permission_mode="acceptEdits",
-        max_turns=30,
-    ),
-):
+result = subprocess.run(
+    [
+        "codex", "exec", "--json", "--ephemeral",
+        "--disable", "codex_hooks", "--sandbox", "read-only",
+        "--output-schema", schema_path, "-"
+    ],
+    input=prompt_text,
+)
 ```
 
 - Builds a prompt with: AGENTS.md schema, current index, all existing articles, and the daily log
-- Claude reads the daily log, decides what concepts to extract, and writes files directly
-- `permission_mode="acceptEdits"` auto-approves all file operations
+- The model returns a structured write plan instead of editing files directly
+- `utils.apply_write_operations()` applies validated `write` / `append` operations locally
 - Incremental: tracks SHA-256 hashes of daily logs in `state.json`, skips unchanged files
-- Cost: ~$0.45-0.65 per daily log (increases as KB grows)
+- Tracks token usage from Codex CLI's JSON events
 
 **CLI:**
 ```bash
-uv run python scripts/compile.py              # compile new/changed only
-uv run python scripts/compile.py --all        # force recompile everything
-uv run python scripts/compile.py --file daily/2026-04-01.md
-uv run python scripts/compile.py --dry-run
+python3 scripts/compile.py              # compile new/changed only
+python3 scripts/compile.py --all        # force recompile everything
+python3 scripts/compile.py --file daily/2026-04-01.md
+python3 scripts/compile.py --dry-run
 ```
 
 ### query.py - Index-Guided Retrieval
@@ -434,11 +438,11 @@ At personal KB scale (50-500 articles), the LLM reading a structured index outpe
 
 **CLI:**
 ```bash
-uv run python scripts/query.py "What auth patterns do I use?"
-uv run python scripts/query.py "What's my error handling strategy?" --file-back
+python3 scripts/query.py "What auth patterns do I use?"
+python3 scripts/query.py "What's my error handling strategy?" --file-back
 ```
 
-With `--file-back`, creates a Q&A article in `knowledge/qa/` and updates the index and log. This is the compounding loop - every question makes the KB smarter.
+With `--file-back`, the model returns both the answer and a structured write plan for the Q&A article, updated index, and build log entry. This is the compounding loop - every question makes the KB smarter.
 
 ### lint.py - Health Checks
 
@@ -456,8 +460,8 @@ Seven checks:
 
 **CLI:**
 ```bash
-uv run python scripts/lint.py                    # all checks
-uv run python scripts/lint.py --structural-only  # skip LLM check (free)
+python3 scripts/lint.py                    # all checks
+python3 scripts/lint.py --structural-only  # skip LLM check (free)
 ```
 
 Reports saved to `reports/lint-YYYY-MM-DD.md`.
@@ -467,12 +471,13 @@ Reports saved to `reports/lint-YYYY-MM-DD.md`.
 ## State Tracking
 
 `scripts/state.json` tracks:
-- `ingested` - map of daily log filenames to SHA-256 hashes, compilation timestamps, and costs
+- `ingested` - map of daily log filenames to SHA-256 hashes, compilation timestamps, token usage, and model metadata
 - `query_count` - total queries run
 - `last_lint` - timestamp of most recent lint
-- `total_cost` - cumulative API cost
+- `total_input_tokens` / `total_output_tokens` / `total_tokens` - cumulative Codex CLI usage
+- `total_cost` - cumulative best-effort cost estimate when the active model has a local price mapping
 
-`scripts/last-flush.json` tracks flush deduplication (session_id + timestamp).
+`scripts/last-flush.json` tracks flush deduplication (`session_id`, `turn_id`, `timestamp`).
 
 Both are gitignored and regenerated automatically.
 
@@ -481,25 +486,29 @@ Both are gitignored and regenerated automatically.
 ## Dependencies
 
 `pyproject.toml` (at project root):
-- `claude-agent-sdk>=0.1.29` - Claude Agent SDK for LLM calls with tool use
-- `python-dotenv>=1.0.0` - Environment variable management
 - `tzdata>=2024.1` - Timezone data
-- Python 3.12+, managed by [uv](https://docs.astral.sh/uv/)
+- Python 3.12+
 
-No API key needed - uses Claude Code's built-in credentials at `~/.claude/.credentials.json`.
+No API key is required when the user is already authenticated in Codex CLI.
+Runtime requirements:
+- `codex` must be on `PATH`
+- `codex login status` must report an active session
+- Repo-local `.codex/config.toml` sets the default model and hook flag
+
+`uv` is optional for development convenience, but the runtime path for hooks and scripts uses plain `python3`.
 
 ---
 
 ## Costs
 
-| Operation | Cost |
-|-----------|------|
-| Compile one daily log | $0.45-0.65 |
-| Query (no file-back) | ~$0.15-0.25 |
-| Query (with file-back) | ~$0.25-0.40 |
-| Full lint (with contradictions) | ~$0.15-0.25 |
-| Structural lint only | $0.00 |
-| Memory flush (per session) | ~$0.02-0.05 |
+This CLI-native port does not rely on direct API billing.
+
+Operational usage now depends on:
+- Your Codex account limits and login method
+- The model selected in Codex config
+- The size of `daily/`, `knowledge/`, and prompt context
+
+The project records token usage from Codex CLI in `scripts/state.json`, but it does not attempt to compute API-style dollar costs.
 
 ---
 

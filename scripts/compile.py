@@ -5,46 +5,67 @@ This is the "LLM compiler" - it reads daily logs (source code) and produces
 organized knowledge articles (the executable).
 
 Usage:
-    uv run python compile.py                    # compile new/changed logs only
-    uv run python compile.py --all              # force recompile everything
-    uv run python compile.py --file daily/2026-04-01.md  # compile a specific log
-    uv run python compile.py --dry-run          # show what would be compiled
+    python3 scripts/compile.py                    # compile new/changed logs only
+    python3 scripts/compile.py --all              # force recompile everything
+    python3 scripts/compile.py --file daily/2026-04-01.md  # compile a specific log
+    python3 scripts/compile.py --dry-run          # show what would be compiled
 """
 
 from __future__ import annotations
 
 import argparse
-import asyncio
 import sys
 from pathlib import Path
 
-from config import AGENTS_FILE, CONCEPTS_DIR, CONNECTIONS_DIR, DAILY_DIR, KNOWLEDGE_DIR, now_iso
+from config import AGENTS_FILE, DAILY_DIR, KNOWLEDGE_DIR, now_iso
+from llm import run_json_response
 from utils import (
+    apply_write_operations,
     file_hash,
     list_raw_files,
     list_wiki_articles,
     load_state,
+    record_usage,
     read_wiki_index,
     save_state,
 )
 
-# ── Paths for the LLM to use ──────────────────────────────────────────
 ROOT_DIR = Path(__file__).resolve().parent.parent
+COMPILE_PLAN_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "created": {
+            "type": "array",
+            "items": {"type": "string"},
+        },
+        "updated": {
+            "type": "array",
+            "items": {"type": "string"},
+        },
+        "writes": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "path": {"type": "string"},
+                    "operation": {"type": "string", "enum": ["write", "append"]},
+                    "content": {"type": "string"},
+                },
+                "required": ["path", "operation", "content"],
+            },
+        },
+    },
+    "required": ["created", "updated", "writes"],
+}
 
 
-async def compile_daily_log(log_path: Path, state: dict) -> float:
+def compile_daily_log(log_path: Path, state: dict) -> int:
     """Compile a single daily log into knowledge articles.
 
-    Returns the API cost of the compilation.
+    Returns the total token count reported by Codex CLI.
     """
-    from claude_agent_sdk import (
-        AssistantMessage,
-        ClaudeAgentOptions,
-        ResultMessage,
-        TextBlock,
-        query,
-    )
-
     log_content = log_path.read_text(encoding="utf-8")
     schema = AGENTS_FILE.read_text(encoding="utf-8")
     wiki_index = read_wiki_index()
@@ -88,11 +109,12 @@ and extract knowledge into structured wiki articles.
 ## Your Task
 
 Read the daily log above and compile it into wiki articles following the schema exactly.
+Respond with JSON only.
 
 ### Rules:
 
 1. **Extract key concepts** - Identify 3-7 distinct concepts worth their own article
-2. **Create concept articles** in `knowledge/concepts/` - One .md file per concept
+2. **Create concept articles** in `knowledge/concepts/` - one `.md` file per concept
    - Use the exact article format from AGENTS.md (YAML frontmatter + sections)
    - Include `sources:` in frontmatter pointing to the daily log file
    - Use `[[concepts/slug]]` wikilinks to link to related concepts
@@ -111,11 +133,14 @@ Read the daily log above and compile it into wiki articles following the schema 
    - Articles updated: [[concepts/z]] (if any)
    ```
 
-### File paths:
-- Write concept articles to: {CONCEPTS_DIR}
-- Write connection articles to: {CONNECTIONS_DIR}
-- Update index at: {KNOWLEDGE_DIR / 'index.md'}
-- Append log at: {KNOWLEDGE_DIR / 'log.md'}
+### JSON output contract:
+- Return `created`: repo-relative wikilink targets created during this compile, without `.md`
+- Return `updated`: repo-relative wikilink targets updated during this compile, without `.md`
+- Return `writes`: a list of file operations
+- Use `operation: "write"` with complete file contents for every new or updated article
+- Always include a `write` operation for `knowledge/index.md` with the full updated file
+- Use `operation: "append"` only for `knowledge/log.md`
+- All file paths must be repo-relative, for example `knowledge/concepts/example.md`
 
 ### Quality standards:
 - Every article must have complete YAML frontmatter
@@ -126,41 +151,47 @@ Read the daily log above and compile it into wiki articles following the schema 
 - Sources section should cite the daily log with specific claims extracted
 """
 
-    cost = 0.0
-
     try:
-        async for message in query(
+        plan, result = run_json_response(
             prompt=prompt,
-            options=ClaudeAgentOptions(
-                cwd=str(ROOT_DIR),
-                system_prompt={"type": "preset", "preset": "claude_code"},
-                allowed_tools=["Read", "Write", "Edit", "Glob", "Grep"],
-                permission_mode="acceptEdits",
-                max_turns=30,
+            instructions=(
+                "You are a deterministic knowledge compiler. Only emit JSON that matches "
+                "the requested schema. Do not wrap the JSON in markdown fences."
             ),
-        ):
-            if isinstance(message, AssistantMessage):
-                for block in message.content:
-                    if isinstance(block, TextBlock):
-                        pass  # compilation output - LLM writes files directly
-            elif isinstance(message, ResultMessage):
-                cost = message.total_cost_usd or 0.0
-                print(f"  Cost: ${cost:.4f}")
+            schema_name="knowledge_compile_plan",
+            schema=COMPILE_PLAN_SCHEMA,
+            max_output_tokens=32_000,
+        )
     except Exception as e:
         print(f"  Error: {e}")
-        return 0.0
+        return 0
+
+    apply_write_operations(plan["writes"])
+    record_usage(state, result.usage, result.cost_usd)
+
+    if result.cost_usd is not None:
+        print(f"  Estimated cost: ${result.cost_usd:.4f}")
+    print(
+        "  Usage:"
+        f" {result.usage.input_tokens} input,"
+        f" {result.usage.output_tokens} output,"
+        f" {result.usage.total_tokens} total"
+    )
 
     # Update state
     rel_path = log_path.name
     state.setdefault("ingested", {})[rel_path] = {
         "hash": file_hash(log_path),
         "compiled_at": now_iso(),
-        "cost_usd": cost,
+        "cost_usd": result.cost_usd,
+        "input_tokens": result.usage.input_tokens,
+        "output_tokens": result.usage.output_tokens,
+        "total_tokens": result.usage.total_tokens,
+        "model": result.model,
     }
-    state["total_cost"] = state.get("total_cost", 0.0) + cost
     save_state(state)
 
-    return cost
+    return result.usage.total_tokens
 
 
 def main():
@@ -208,15 +239,15 @@ def main():
         return
 
     # Compile each file sequentially
-    total_cost = 0.0
+    total_tokens = 0
     for i, log_path in enumerate(to_compile, 1):
         print(f"\n[{i}/{len(to_compile)}] Compiling {log_path.name}...")
-        cost = asyncio.run(compile_daily_log(log_path, state))
-        total_cost += cost
+        token_count = compile_daily_log(log_path, state)
+        total_tokens += token_count
         print(f"  Done.")
 
     articles = list_wiki_articles()
-    print(f"\nCompilation complete. Total cost: ${total_cost:.2f}")
+    print(f"\nCompilation complete. Total tokens: {total_tokens}")
     print(f"Knowledge base: {len(articles)} articles")
 
 

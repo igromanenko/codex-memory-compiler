@@ -1,0 +1,5 @@
+model = "gpt-5.3-codex"
+model_reasoning_effort = "medium"
+
+[features]
+codex_hooks = true

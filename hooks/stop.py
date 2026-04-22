@@ -1,11 +1,12 @@
 """
-SessionEnd hook - captures conversation transcript for memory extraction.
+Stop hook - captures the latest conversation turns for memory extraction.
 
-When a Claude Code session ends, this hook reads the transcript path from
-stdin, extracts conversation context, and spawns flush.py as a background
-process to extract knowledge into the daily log.
+Codex currently exposes `Stop` instead of Claude-style `SessionEnd` or
+`PreCompact`. This hook therefore acts as the memory capture trigger after
+each completed turn. It extracts recent transcript context and spawns
+`scripts/flush.py` as a background process.
 
-The hook itself does NO API calls - only local file I/O for speed (<10s).
+The hook itself does no API calls - only local file I/O for speed.
 """
 
 from __future__ import annotations
@@ -19,34 +20,32 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Recursion guard: if we were spawned by flush.py (which calls Agent SDK,
-# which runs Claude Code, which would fire this hook again), exit immediately.
-if os.environ.get("CLAUDE_INVOKED_BY"):
+# Recursion guard: if we were spawned by flush.py, exit immediately.
+if os.environ.get("CODEX_INVOKED_BY"):
     sys.exit(0)
 
 ROOT = Path(__file__).resolve().parent.parent
-DAILY_DIR = ROOT / "daily"
 SCRIPTS_DIR = ROOT / "scripts"
 STATE_DIR = SCRIPTS_DIR
 
 logging.basicConfig(
     filename=str(SCRIPTS_DIR / "flush.log"),
     level=logging.INFO,
-    format="%(asctime)s %(levelname)s [hook] %(message)s",
+    format="%(asctime)s %(levelname)s [stop-hook] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 
-MAX_TURNS = 30
-MAX_CONTEXT_CHARS = 15_000
+MAX_TURNS = 8
+MAX_CONTEXT_CHARS = 12_000
 MIN_TURNS_TO_FLUSH = 1
 
 
 def extract_conversation_context(transcript_path: Path) -> tuple[str, int]:
-    """Read JSONL transcript and extract last ~N conversation turns as markdown."""
+    """Read JSONL transcript and extract the latest conversation turns."""
     turns: list[str] = []
 
-    with open(transcript_path, encoding="utf-8") as f:
-        for line in f:
+    with open(transcript_path, encoding="utf-8") as handle:
+        for line in handle:
             line = line.strip()
             if not line:
                 continue
@@ -92,82 +91,90 @@ def extract_conversation_context(transcript_path: Path) -> tuple[str, int]:
 
 
 def main() -> None:
-    # Read hook input from stdin
-    # Claude Code on Windows may pass paths with unescaped backslashes
     try:
         raw_input = sys.stdin.read()
         try:
             hook_input: dict = json.loads(raw_input)
         except json.JSONDecodeError:
-            fixed_input = re.sub(r'(?<!\\)\\(?!["\\])', r'\\\\', raw_input)
+            fixed_input = re.sub(r'(?<!\\)\\(?!["\\])', r"\\\\", raw_input)
             hook_input = json.loads(fixed_input)
-    except (json.JSONDecodeError, ValueError, EOFError) as e:
-        logging.error("Failed to parse stdin: %s", e)
+    except (json.JSONDecodeError, ValueError, EOFError) as exc:
+        logging.error("Failed to parse stdin: %s", exc)
+        print(json.dumps({"continue": True}))
         return
 
     session_id = hook_input.get("session_id", "unknown")
-    source = hook_input.get("source", "unknown")
+    turn_id = hook_input.get("turn_id", "unknown")
     transcript_path_str = hook_input.get("transcript_path", "")
 
-    logging.info("SessionEnd fired: session=%s source=%s", session_id, source)
+    logging.info("Stop fired: session=%s turn=%s", session_id, turn_id)
 
     if not transcript_path_str or not isinstance(transcript_path_str, str):
         logging.info("SKIP: no transcript path")
+        print(json.dumps({"continue": True}))
         return
 
     transcript_path = Path(transcript_path_str)
     if not transcript_path.exists():
         logging.info("SKIP: transcript missing: %s", transcript_path_str)
+        print(json.dumps({"continue": True}))
         return
 
-    # Extract conversation context in the hook (fast, no API calls)
     try:
         context, turn_count = extract_conversation_context(transcript_path)
-    except Exception as e:
-        logging.error("Context extraction failed: %s", e)
+    except Exception as exc:
+        logging.error("Context extraction failed: %s", exc)
+        print(json.dumps({"continue": True}))
         return
 
     if not context.strip():
         logging.info("SKIP: empty context")
+        print(json.dumps({"continue": True}))
         return
 
     if turn_count < MIN_TURNS_TO_FLUSH:
         logging.info("SKIP: only %d turns (min %d)", turn_count, MIN_TURNS_TO_FLUSH)
+        print(json.dumps({"continue": True}))
         return
 
-    # Write context to a temp file for the background process
     timestamp = datetime.now(timezone.utc).astimezone().strftime("%Y%m%d-%H%M%S")
-    context_file = STATE_DIR / f"session-flush-{session_id}-{timestamp}.md"
+    context_file = STATE_DIR / f"stop-flush-{session_id}-{turn_id}-{timestamp}.md"
     context_file.write_text(context, encoding="utf-8")
 
-    # Spawn flush.py as a background process
     flush_script = SCRIPTS_DIR / "flush.py"
-
     cmd = [
-        "uv",
-        "run",
-        "--directory",
-        str(ROOT),
-        "python",
+        sys.executable,
         str(flush_script),
         str(context_file),
         session_id,
+        turn_id,
     ]
 
-    # On Windows, use CREATE_NO_WINDOW to avoid flash console window.
-    # Do NOT use DETACHED_PROCESS — it breaks the Agent SDK's subprocess I/O.
-    creation_flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+    kwargs: dict = {}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    else:
+        kwargs["start_new_session"] = True
 
     try:
         subprocess.Popen(
             cmd,
+            cwd=str(ROOT),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            creationflags=creation_flags,
+            **kwargs,
         )
-        logging.info("Spawned flush.py for session %s (%d turns, %d chars)", session_id, turn_count, len(context))
-    except Exception as e:
-        logging.error("Failed to spawn flush.py: %s", e)
+        logging.info(
+            "Spawned flush.py for session %s turn %s (%d turns, %d chars)",
+            session_id,
+            turn_id,
+            turn_count,
+            len(context),
+        )
+    except Exception as exc:
+        logging.error("Failed to spawn flush.py: %s", exc)
+
+    print(json.dumps({"continue": True}))
 
 
 if __name__ == "__main__":

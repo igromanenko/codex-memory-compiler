@@ -1,52 +1,83 @@
-# LLM Personal Knowledge Base
+# Codex Memory Compiler
 
-**Your AI conversations compile themselves into a searchable knowledge base.**
+**Your Codex conversations compile themselves into a searchable knowledge base.**
 
-Adapted from [Karpathy's LLM Knowledge Base](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) architecture, but instead of clipping web articles, the raw data is your own conversations with Claude Code. When a session ends (or auto-compacts mid-session), Claude Code hooks capture the conversation transcript and spawn a background process that uses the [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk) to extract the important stuff - decisions, lessons learned, patterns, gotchas - and appends it to a daily log. You then compile those daily logs into structured, cross-referenced knowledge articles organized by concept. Retrieval uses a simple index file instead of RAG - no vector database, no embeddings, just markdown.
+This project keeps Karpathy's LLM knowledge-base architecture intact, but adapts the implementation for Codex CLI. Raw session history lands in `daily/`, structured knowledge is compiled into `knowledge/`, and retrieval stays index-guided rather than embedding-driven. The integration layer is fully CLI-native: Codex hooks drive capture, and the Python scripts call `codex exec` non-interactively instead of using an API SDK.
 
-Anthropic has clarified that personal use of the Claude Agent SDK is covered under your existing Claude subscription (Max, Team, or Enterprise) - no separate API credits needed. Unlike OpenClaw, which requires API billing for its memory flush, this runs on your subscription.
+## What Changed For Codex CLI
+
+- `AGENTS.md` remains the compiler spec and repository operating manual. Codex reads it natively.
+- `.codex/hooks.json` replaces `.claude/settings.json`.
+- Codex `SessionStart` still injects the knowledge base into new sessions.
+- Codex has no `SessionEnd` or `PreCompact` hook today, so automatic memory capture runs from the `Stop` hook after each completed turn.
+- `scripts/compile.py`, `scripts/query.py`, `scripts/lint.py`, and `scripts/flush.py` use `codex exec` as their LLM backend.
+- No `OPENAI_API_KEY` is required when you are already logged into Codex CLI.
 
 ## Quick Start
 
-Tell your AI coding agent:
+1. Make sure Codex CLI is installed and authenticated:
 
-> "Clone https://github.com/coleam00/claude-memory-compiler into this project. Set up the Claude Code hooks so my conversations automatically get captured into daily logs, compiled into a knowledge base, and injected back into future sessions. Read the AGENTS.md for the full technical reference on how everything works."
+```bash
+codex --version
+codex login status
+```
 
-The agent will:
-1. Clone the repo and run `uv sync` to install dependencies
-2. Copy `.claude/settings.json` into your project (or merge the hooks into your existing settings)
-3. The hooks activate automatically next time you open Claude Code
+2. Runtime dependencies are stdlib-only. If you want an isolated environment for development, install it with:
 
-From there, your conversations start accumulating. After 6 PM local time, the next session flush automatically triggers compilation of that day's logs into knowledge articles. You can also run `uv run python scripts/compile.py` manually at any time.
+```bash
+uv sync
+```
+
+3. Open the repository in Codex. Repo-local `.codex/config.toml` enables hooks, and `.codex/hooks.json` registers `SessionStart` and `Stop`.
+
+From there, each completed Codex turn can contribute durable notes to `daily/YYYY-MM-DD.md`. After `COMPILE_AFTER_HOUR` in `scripts/flush.py` (default `18` local time), the next successful flush triggers automatic compilation of that day's log.
 
 ## How It Works
 
-```
-Conversation -> SessionEnd/PreCompact hooks -> flush.py extracts knowledge
-    -> daily/YYYY-MM-DD.md -> compile.py -> knowledge/concepts/, connections/, qa/
-        -> SessionStart hook injects index into next session -> cycle repeats
+```text
+Codex turn -> Stop hook -> flush.py extracts durable notes
+           -> daily/YYYY-MM-DD.md -> compile.py -> knowledge/concepts/, connections/, qa/
+SessionStart hook -> inject index + recent log into next Codex session
 ```
 
-- **Hooks** capture conversations automatically (session end + pre-compaction safety net)
-- **flush.py** calls the Claude Agent SDK to decide what's worth saving, and after 6 PM triggers end-of-day compilation automatically
-- **compile.py** turns daily logs into organized concept articles with cross-references (triggered automatically or run manually)
-- **query.py** answers questions using index-guided retrieval (no RAG needed at personal scale)
-- **lint.py** runs 7 health checks (broken links, orphans, contradictions, staleness)
+- `hooks/session-start.py` injects `knowledge/index.md` plus the tail of the most recent daily log.
+- `hooks/stop.py` extracts the latest transcript window and spawns `scripts/flush.py` in the background.
+- `scripts/flush.py` runs `codex exec` to decide what is worth preserving and appends only new, high-signal notes.
+- `scripts/compile.py` turns daily logs into structured concept and connection articles.
+- `scripts/query.py` answers questions using index-guided retrieval and can file answers back into `knowledge/qa/`.
+- `scripts/lint.py` runs structural checks and an optional contradiction pass.
 
 ## Key Commands
 
 ```bash
-uv run python scripts/compile.py                    # compile new daily logs
-uv run python scripts/query.py "question"            # ask the knowledge base
-uv run python scripts/query.py "question" --file-back # ask + save answer back
-uv run python scripts/lint.py                        # run health checks
-uv run python scripts/lint.py --structural-only      # free structural checks only
+python3 scripts/compile.py
+python3 scripts/compile.py --all
+python3 scripts/query.py "What auth patterns do I use?"
+python3 scripts/query.py "What auth patterns do I use?" --file-back
+python3 scripts/lint.py
+python3 scripts/lint.py --structural-only
 ```
 
-## Why No RAG?
+## Environment
 
-Karpathy's insight: at personal scale (50-500 articles), the LLM reading a structured `index.md` outperforms vector similarity. The LLM understands what you're really asking; cosine similarity just finds similar words. RAG becomes necessary at ~2,000+ articles when the index exceeds the context window.
+- Python 3.12+
+- `codex` on `PATH`
+- Active Codex login session via `codex login`
+
+`uv` is optional and only useful if you want a managed virtualenv for development or test runs.
+
+The project defaults to the model configured in `.codex/config.toml`, or whatever `codex exec` resolves in your local Codex setup.
+
+## Limitations
+
+- Codex hooks are currently experimental.
+- OpenAI's Codex hooks docs currently state that hooks are temporarily disabled on Windows.
+- Because Codex does not expose `SessionEnd` or `PreCompact`, this port captures memory at `Stop` time instead.
 
 ## Technical Reference
 
-See **[AGENTS.md](AGENTS.md)** for the complete technical reference: article formats, hook architecture, script internals, cross-platform details, costs, and customization options. AGENTS.md is designed to give an AI agent everything it needs to understand, modify, or rebuild the system.
+See **[AGENTS.md](AGENTS.md)** for the full compiler specification: article formats, hook architecture, daily log schema, query/file-back behavior, lint checks, and customization points.
+
+For an operator-focused guide on setup, hooks, commands, troubleshooting, and Codex-specific nuances, see **[CODEX_USAGE.md](CODEX_USAGE.md)**.
+
+For IntelliJ IDEA / PyCharm refresh issues, stale diffs, and old hook-state problems, see **[IDE_TROUBLESHOOTING.md](IDE_TROUBLESHOOTING.md)**.

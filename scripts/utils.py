@@ -13,6 +13,7 @@ from config import (
     KNOWLEDGE_DIR,
     LOG_FILE,
     QA_DIR,
+    ROOT_DIR,
     STATE_FILE,
 )
 
@@ -22,13 +23,38 @@ from config import (
 def load_state() -> dict:
     """Load persistent state from state.json."""
     if STATE_FILE.exists():
-        return json.loads(STATE_FILE.read_text(encoding="utf-8"))
-    return {"ingested": {}, "query_count": 0, "last_lint": None, "total_cost": 0.0}
+        state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+    else:
+        state = {}
+
+    state.setdefault("ingested", {})
+    state.setdefault("query_count", 0)
+    state.setdefault("last_lint", None)
+    state.setdefault("total_cost", 0.0)
+    state.setdefault("total_input_tokens", 0)
+    state.setdefault("total_output_tokens", 0)
+    state.setdefault("total_tokens", 0)
+    return state
 
 
 def save_state(state: dict) -> None:
     """Save state to state.json."""
     STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+
+def record_usage(state: dict, usage, cost_usd: float | None) -> None:
+    """Merge usage counters into persistent state."""
+    state["total_input_tokens"] = state.get("total_input_tokens", 0) + getattr(
+        usage, "input_tokens", 0
+    )
+    state["total_output_tokens"] = state.get("total_output_tokens", 0) + getattr(
+        usage, "output_tokens", 0
+    )
+    state["total_tokens"] = state.get("total_tokens", 0) + getattr(
+        usage, "total_tokens", 0
+    )
+    if cost_usd is not None:
+        state["total_cost"] = round(state.get("total_cost", 0.0) + cost_usd, 6)
 
 
 # ── File hashing ──────────────────────────────────────────────────────
@@ -131,3 +157,44 @@ def build_index_entry(rel_path: str, summary: str, sources: str, updated: str) -
     """Build a single index table row."""
     link = rel_path.replace(".md", "")
     return f"| [[{link}]] | {summary} | {sources} | {updated} |"
+
+
+def resolve_repo_path(rel_path: str) -> Path:
+    """Resolve a repo-relative path and reject path traversal."""
+    candidate = (ROOT_DIR / rel_path).resolve()
+    root_resolved = ROOT_DIR.resolve()
+    if candidate == root_resolved or root_resolved in candidate.parents:
+        return candidate
+    raise ValueError(f"Path escapes repository root: {rel_path}")
+
+
+def apply_write_operations(
+    operations: list[dict],
+    allowed_prefixes: tuple[str, ...] = ("knowledge/",),
+) -> None:
+    """Apply structured write/append operations returned by the LLM."""
+    for operation in operations:
+        rel_path = operation["path"]
+        mode = operation["operation"]
+        content = operation["content"]
+        if not any(rel_path.startswith(prefix) for prefix in allowed_prefixes):
+            raise ValueError(f"Write operation outside allowed prefixes: {rel_path}")
+        path = resolve_repo_path(rel_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        if mode == "write":
+            path.write_text(content, encoding="utf-8")
+            continue
+
+        if mode != "append":
+            raise ValueError(f"Unsupported write operation: {mode}")
+
+        if not path.exists():
+            prefix = "# Build Log\n\n" if path == LOG_FILE else ""
+            path.write_text(prefix, encoding="utf-8")
+
+        existing = path.read_text(encoding="utf-8")
+        with open(path, "a", encoding="utf-8") as handle:
+            if existing and not existing.endswith("\n"):
+                handle.write("\n")
+            handle.write(content)
