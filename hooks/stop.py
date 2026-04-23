@@ -25,11 +25,16 @@ if os.environ.get("CODEX_INVOKED_BY"):
     sys.exit(0)
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "scripts"))
+
+from config import FLUSH_LOG_FILE
+
 SCRIPTS_DIR = ROOT / "scripts"
 STATE_DIR = SCRIPTS_DIR
+FLUSH_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 logging.basicConfig(
-    filename=str(SCRIPTS_DIR / "flush.log"),
+    filename=str(FLUSH_LOG_FILE),
     level=logging.INFO,
     format="%(asctime)s %(levelname)s [stop-hook] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",

@@ -80,7 +80,7 @@ def ensure_codex_login() -> None:
     stderr = (result.stderr or "").strip()
     combined = "\n".join(part for part in [stdout, stderr] if part).strip()
 
-    if result.returncode == 0 and combined.startswith("Logged in"):
+    if result.returncode == 0 and "logged in" in combined.lower():
         return
 
     message = combined or "unknown authentication error"

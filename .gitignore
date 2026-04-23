@@ -11,6 +11,7 @@ scripts/compile.log
 scripts/session-flush-*
 scripts/flush-context-*
 scripts/stop-flush-*
+.memory-compiler/
 
 # Generated content (built up per-user by hooks and scripts)
 daily/
@@ -24,6 +25,7 @@ reports/
 
 # Codex local settings
 .codex/config.local.toml
+.codex/vault.local
 .claude/
 .idea/
 

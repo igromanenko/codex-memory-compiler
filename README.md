@@ -22,10 +22,17 @@ codex --version
 codex login status
 ```
 
-2. Runtime dependencies are stdlib-only. If you want an isolated environment for development, install it with:
+2. Runtime dependencies are minimal. If you want an isolated environment for development, use either:
 
 ```bash
 uv sync
+```
+
+or:
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install tzdata
 ```
 
 3. Open the repository in Codex. Repo-local `.codex/config.toml` enables hooks, and `.codex/hooks.json` registers `SessionStart` and `Stop`.
@@ -67,6 +74,24 @@ python3 scripts/lint.py --structural-only
 `uv` is optional and only useful if you want a managed virtualenv for development or test runs.
 
 The project defaults to the model configured in `.codex/config.toml`, or whatever `codex exec` resolves in your local Codex setup.
+
+## Custom Vault Path
+
+By default, the vault is the repository root. You can point the compiler to a personal vault directory in two ways:
+
+1. Local file override (recommended for per-repo setup):
+
+```bash
+echo "/home/i/projects/project1/project1_vault" > .codex/vault.local
+```
+
+2. Environment override:
+
+```bash
+export KB_VAULT_DIR=/home/i/projects/project1/project1_vault
+```
+
+When set, the scripts and hooks read/write `daily/`, `knowledge/`, `reports/`, and `.memory-compiler/` inside that vault path.
 
 ## Limitations
 

@@ -13,7 +13,7 @@ from config import (
     KNOWLEDGE_DIR,
     LOG_FILE,
     QA_DIR,
-    ROOT_DIR,
+    VAULT_DIR,
     STATE_FILE,
 )
 
@@ -23,7 +23,10 @@ from config import (
 def load_state() -> dict:
     """Load persistent state from state.json."""
     if STATE_FILE.exists():
-        state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        try:
+            state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            state = {}
     else:
         state = {}
 
@@ -39,6 +42,7 @@ def load_state() -> dict:
 
 def save_state(state: dict) -> None:
     """Save state to state.json."""
+    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
 
@@ -159,13 +163,13 @@ def build_index_entry(rel_path: str, summary: str, sources: str, updated: str) -
     return f"| [[{link}]] | {summary} | {sources} | {updated} |"
 
 
-def resolve_repo_path(rel_path: str) -> Path:
-    """Resolve a repo-relative path and reject path traversal."""
-    candidate = (ROOT_DIR / rel_path).resolve()
-    root_resolved = ROOT_DIR.resolve()
-    if candidate == root_resolved or root_resolved in candidate.parents:
+def resolve_vault_path(rel_path: str) -> Path:
+    """Resolve a vault-relative path and reject path traversal."""
+    candidate = (VAULT_DIR / rel_path).resolve()
+    vault_resolved = VAULT_DIR.resolve()
+    if candidate == vault_resolved or vault_resolved in candidate.parents:
         return candidate
-    raise ValueError(f"Path escapes repository root: {rel_path}")
+    raise ValueError(f"Path escapes vault root: {rel_path}")
 
 
 def apply_write_operations(
@@ -179,7 +183,7 @@ def apply_write_operations(
         content = operation["content"]
         if not any(rel_path.startswith(prefix) for prefix in allowed_prefixes):
             raise ValueError(f"Write operation outside allowed prefixes: {rel_path}")
-        path = resolve_repo_path(rel_path)
+        path = resolve_vault_path(rel_path)
         path.parent.mkdir(parents=True, exist_ok=True)
 
         if mode == "write":

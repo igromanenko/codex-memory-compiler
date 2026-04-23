@@ -25,12 +25,12 @@ class ApplyWriteOperationsTest(unittest.TestCase):
                 ]
             )
 
-    def test_writes_and_appends_inside_repo_root(self) -> None:
+    def test_writes_and_appends_inside_vault_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             temp_root = Path(tmpdir)
             log_file = temp_root / "knowledge" / "log.md"
 
-            with mock.patch.object(utils, "ROOT_DIR", temp_root), mock.patch.object(
+            with mock.patch.object(utils, "VAULT_DIR", temp_root), mock.patch.object(
                 utils, "LOG_FILE", log_file
             ):
                 utils.apply_write_operations(
@@ -56,6 +56,22 @@ class ApplyWriteOperationsTest(unittest.TestCase):
                     log_file.read_text(encoding="utf-8"),
                     "# Build Log\n\n## entry\n",
                 )
+
+
+class SaveStateTest(unittest.TestCase):
+    def test_creates_state_directory_for_external_vault(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_root = Path(tmpdir)
+            state_file = temp_root / ".memory-compiler" / "state.json"
+
+            with mock.patch.object(utils, "STATE_FILE", state_file):
+                utils.save_state({"query_count": 1})
+
+            self.assertTrue(state_file.exists())
+            self.assertEqual(
+                state_file.read_text(encoding="utf-8"),
+                '{\n  "query_count": 1\n}',
+            )
 
 
 if __name__ == "__main__":

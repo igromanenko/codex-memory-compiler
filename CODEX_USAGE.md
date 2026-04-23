@@ -40,6 +40,13 @@ codex login status
 python3 --version
 ```
 
+If `uv` is not installed, that is not a blocker. A plain virtualenv is enough:
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install tzdata
+```
+
 If `codex login status` does not say `Logged in`, run:
 
 ```bash
@@ -55,6 +62,35 @@ All model-backed operations go through non-interactive `codex exec`, not through
 - no API key is needed
 - your Codex account limits still apply
 - if Codex is rate-limited, `compile/query/lint/flush` can fail until the limit resets
+
+## Use A Personal Vault Directory
+
+By default, this repository acts as the vault root. To store knowledge in another local path (for example a project vault), set one of these overrides:
+
+1. Local override file in this repo:
+
+```bash
+echo "/home/i/projects/project1/project1_vault" > .codex/vault.local
+```
+
+2. Environment variable:
+
+```bash
+export KB_VAULT_DIR=/home/i/projects/project1/project1_vault
+```
+
+Override priority is:
+
+1. `KB_VAULT_DIR`
+2. `.codex/vault.local`
+3. repository root (default)
+
+With an override, runtime data goes to that vault path:
+
+- `daily/`
+- `knowledge/`
+- `reports/`
+- `.memory-compiler/` (state + logs)
 
 ## Hook Configuration
 

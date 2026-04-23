@@ -284,6 +284,16 @@ Output: a markdown report with severity levels (error, warning, suggestion).
 - **Frontmatter:** Every article must have YAML frontmatter with at minimum: title, sources, created, updated
 - **Sources:** Always link back to the daily log(s) that contributed to an article
 
+## Vault Path Resolution
+
+The compiler supports an external local vault path. Resolution order:
+
+1. `KB_VAULT_DIR` environment variable
+2. `.codex/vault.local` file (single-line absolute or relative path)
+3. Repository root (default)
+
+All runtime content (`daily/`, `knowledge/`, `reports/`, and `.memory-compiler/`) is resolved inside the selected vault root.
+
 ---
 
 ## Full Project Structure
@@ -327,7 +337,7 @@ Codex discovers repo-local hooks in `.codex/hooks.json`. Hooks are currently beh
 ### `.codex/config.toml`
 
 ```toml
-model = "gpt-5.3-codex"
+model = "gpt-5.4"
 model_reasoning_effort = "medium"
 
 [features]
@@ -470,14 +480,14 @@ Reports saved to `reports/lint-YYYY-MM-DD.md`.
 
 ## State Tracking
 
-`scripts/state.json` tracks:
+`.memory-compiler/state.json` tracks:
 - `ingested` - map of daily log filenames to SHA-256 hashes, compilation timestamps, token usage, and model metadata
 - `query_count` - total queries run
 - `last_lint` - timestamp of most recent lint
 - `total_input_tokens` / `total_output_tokens` / `total_tokens` - cumulative Codex CLI usage
 - `total_cost` - cumulative best-effort cost estimate when the active model has a local price mapping
 
-`scripts/last-flush.json` tracks flush deduplication (`session_id`, `turn_id`, `timestamp`).
+`.memory-compiler/last-flush.json` tracks flush deduplication (`session_id`, `turn_id`, `timestamp`).
 
 Both are gitignored and regenerated automatically.
 
@@ -508,7 +518,7 @@ Operational usage now depends on:
 - The model selected in Codex config
 - The size of `daily/`, `knowledge/`, and prompt context
 
-The project records token usage from Codex CLI in `scripts/state.json`, but it does not attempt to compute API-style dollar costs.
+The project records token usage from Codex CLI in `.memory-compiler/state.json`, but it does not attempt to compute API-style dollar costs.
 
 ---
 

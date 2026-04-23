@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import argparse
 
-from config import KNOWLEDGE_DIR, QA_DIR, now_iso
+from config import QA_DIR, now_iso
 from llm import run_json_response, run_text_response
 from utils import apply_write_operations, load_state, read_all_wiki_content, record_usage, save_state
 
@@ -57,12 +57,12 @@ def run_query(question: str, file_back: bool = False) -> str:
 ## File Back Instructions (JSON mode)
 
 After answering, do the following:
-1. Create a Q&A article at {QA_DIR}/ with the filename being a slugified version
-   of the question (e.g., knowledge/qa/how-to-handle-auth-redirects.md)
+1. Create a Q&A article in `knowledge/qa/` with the filename being a slugified
+   version of the question (e.g., `knowledge/qa/how-to-handle-auth-redirects.md`)
 2. Use the Q&A article format from the schema (frontmatter with title, question,
    consulted articles, filed date)
-3. Update {KNOWLEDGE_DIR / 'index.md'} with a new row for this Q&A article
-4. Append to {KNOWLEDGE_DIR / 'log.md'}:
+3. Update `knowledge/index.md` with a new row for this Q&A article
+4. Append to `knowledge/log.md`:
    ## [{timestamp}] query (filed) | question summary
    - Question: {question}
    - Consulted: [[list of articles read]]
@@ -70,7 +70,7 @@ After answering, do the following:
 5. Return JSON with:
    - `answer`: the final user-facing answer
    - `consulted`: the consulted wikilinks, without `.md`
-   - `writes`: repo-relative file operations
+   - `writes`: vault-relative file operations
 6. Use `operation: "write"` for the QA file and `knowledge/index.md`
 7. Use `operation: "append"` only for `knowledge/log.md`
 """

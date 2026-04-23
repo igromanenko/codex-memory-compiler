@@ -134,13 +134,13 @@ Respond with JSON only.
    ```
 
 ### JSON output contract:
-- Return `created`: repo-relative wikilink targets created during this compile, without `.md`
-- Return `updated`: repo-relative wikilink targets updated during this compile, without `.md`
+- Return `created`: vault-relative wikilink targets created during this compile, without `.md`
+- Return `updated`: vault-relative wikilink targets updated during this compile, without `.md`
 - Return `writes`: a list of file operations
 - Use `operation: "write"` with complete file contents for every new or updated article
 - Always include a `write` operation for `knowledge/index.md` with the full updated file
 - Use `operation: "append"` only for `knowledge/log.md`
-- All file paths must be repo-relative, for example `knowledge/concepts/example.md`
+- All file paths must be vault-relative, for example `knowledge/concepts/example.md`
 
 ### Quality standards:
 - Every article must have complete YAML frontmatter
