@@ -37,7 +37,16 @@ python3 -m venv .venv
 
 3. Open the repository in Codex. Repo-local `.codex/config.toml` enables hooks, and `.codex/hooks.json` registers `SessionStart` and `Stop`.
 
-From there, each completed Codex turn can contribute durable notes to `daily/YYYY-MM-DD.md`. After `COMPILE_AFTER_HOUR` in `scripts/flush.py` (default `18` local time), the next successful flush triggers automatic compilation of that day's log.
+From there, each completed Codex turn can contribute durable notes to `daily/YYYY-MM-DD.md`. After each successful flush, if today's daily log changed since its last compile, `scripts/flush.py` triggers automatic compilation of that day's log.
+
+The runtime behavior is incremental but date-scoped:
+
+- Every successful flush appends to the same `daily/YYYY-MM-DD.md` file for the current date.
+- Multiple Codex sessions on the same day accumulate into that one daily log instead of creating separate per-session source files.
+- After each append, `flush.py` compares today's log hash with `.memory-compiler/state.json`.
+- If the hash changed since the last compile, `flush.py` spawns `scripts/compile.py` in the background immediately.
+- `compile.py` recompiles the full daily log, updating existing `knowledge/` articles when topics overlap and creating new ones only when the log introduces genuinely new concepts.
+- There is no cron dependency and no end-of-day waiting window; if the machine is off, nothing runs until the next successful Codex-triggered flush.
 
 ## How It Works
 
@@ -49,7 +58,7 @@ SessionStart hook -> inject index + recent log into next Codex session
 
 - `hooks/session-start.py` injects `knowledge/index.md` plus the tail of the most recent daily log.
 - `hooks/stop.py` extracts the latest transcript window and spawns `scripts/flush.py` in the background.
-- `scripts/flush.py` runs `codex exec` to decide what is worth preserving and appends only new, high-signal notes.
+- `scripts/flush.py` runs `codex exec` to decide what is worth preserving, appends only new, high-signal notes, and then triggers background compilation when today's daily log changed.
 - `scripts/compile.py` turns daily logs into structured concept and connection articles.
 - `scripts/query.py` answers questions using index-guided retrieval and can file answers back into `knowledge/qa/`.
 - `scripts/lint.py` runs structural checks and an optional contradiction pass.

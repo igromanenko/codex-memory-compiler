@@ -392,7 +392,7 @@ This ensures `flush.py` survives after the hook process exits.
 6. Codex decides what's worth saving and returns structured notes or `FLUSH_OK`
 7. Appends only non-empty, non-duplicate results to `daily/YYYY-MM-DD.md`
 8. Cleans up temp context file
-9. **End-of-day auto-compilation:** If it's past 6 PM local time (`COMPILE_AFTER_HOUR = 18`) and today's daily log has changed since its last compilation (hash comparison against `state.json`), spawns `compile.py` as another detached background process. This means compilation happens automatically once a day without needing a cron job or manual trigger.
+9. **Post-flush auto-compilation:** If today's daily log has changed since its last compilation (hash comparison against `state.json`), spawns `compile.py` as another detached background process. This means successful Codex flushes propagate into `knowledge/` without waiting for a cron job or end-of-day window.
 
 ### JSONL Transcript Format
 

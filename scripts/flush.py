@@ -151,17 +151,11 @@ respond with exactly: FLUSH_OK
 
     return response
 
-
-COMPILE_AFTER_HOUR = 18  # 6 PM local time
-
-
 def maybe_trigger_compilation() -> None:
-    """If it's past the compile hour and today's log hasn't been compiled, run compile.py."""
+    """Compile after flush when today's daily log changed since its last compile."""
     import subprocess as _sp
 
     now = datetime.now(timezone.utc).astimezone()
-    if now.hour < COMPILE_AFTER_HOUR:
-        return
 
     # Check if today's log has already been compiled
     today_log = f"{now.strftime('%Y-%m-%d')}.md"
@@ -185,7 +179,7 @@ def maybe_trigger_compilation() -> None:
     if not compile_script.exists():
         return
 
-    logging.info("End-of-day compilation triggered (after %d:00)", COMPILE_AFTER_HOUR)
+    logging.info("Post-flush compilation triggered for %s", today_log)
 
     cmd = [sys.executable, str(compile_script)]
 
@@ -268,8 +262,8 @@ def main():
     # Clean up context file
     context_file.unlink(missing_ok=True)
 
-    # End-of-day auto-compilation: if it's past the compile hour and today's
-    # log hasn't been compiled yet, trigger compile.py in the background.
+    # Auto-compilation: if today's daily log changed since its last compile,
+    # trigger compile.py in the background.
     maybe_trigger_compilation()
 
     logging.info("Flush complete for session %s", session_id)
