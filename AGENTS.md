@@ -1,537 +1,428 @@
-# AGENTS.md - Personal Knowledge Base Schema
+# AGENTS.md - Codex Memory Compiler Spec / Спецификация компилятора
 
-> Adapted from [Andrej Karpathy's LLM Knowledge Base](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) architecture.
-> Instead of ingesting external articles, this system compiles knowledge from your own AI conversations.
+This file is both the compiler contract for Codex and the human-readable schema of the knowledge base. / Этот файл одновременно является контрактом для Codex и человекочитаемой схемой базы знаний.
 
-## The Compiler Analogy
+The project follows the personal knowledge-base idea popularized by Andrej Karpathy:
+- conversations become source logs / разговоры становятся исходным сырьем
+- the model compiles them into structured wiki pages / модель компилирует их в структурированные wiki-страницы
+- future sessions start with the compiled knowledge / будущие сессии стартуют уже с накопленным знанием
 
+## 1. Goal / Цель
+
+Build a durable markdown wiki from real Codex work sessions. / Построить долговечную markdown-вики из реальных рабочих сессий Codex.
+
+The system should:
+- preserve important project context / сохранять важный проектный контекст
+- avoid duplicate notes / избегать дублей
+- keep raw logs separate from compiled knowledge / отделять сырые логи от скомпилированного знания
+- work both for one repo and for many repos connected to one vault / работать и для одного репозитория, и для многих репозиториев с общим vault
+
+## 2. Two Supported Modes / Два поддерживаемых режима
+
+### Single Repo Mode / Режим одного репозитория
+
+Use this when one repo is the whole project. / Используйте, когда один репозиторий и есть весь проект.
+
+- Vault root defaults to this repository root. / Корень vault по умолчанию совпадает с корнем этого репозитория.
+- `daily/`, `knowledge/`, `reports/`, `.memory-compiler/` live here.
+
+### Shared Vault Mode / Режим общего vault
+
+Use this when many repos belong to one product. / Используйте, когда продукт состоит из многих репозиториев.
+
+- This repo stays the compiler implementation. / Этот репозиторий остается реализацией компилятора.
+- Work repos get repo-local `.codex/` hook files. / Рабочие репозитории получают локальные `.codex/` hook-файлы.
+- All work repos write into one external vault. / Все рабочие репозитории пишут в один внешний vault.
+- The external vault can be opened in Obsidian. / Внешний vault можно открыть в Obsidian.
+
+## 3. Path Resolution / Разрешение путей
+
+### Compiler root / Корень компилятора
+
+The compiler code always lives in this repository. / Код компилятора всегда живет в этом репозитории.
+
+### Project root / Корень проекта
+
+The active project root is:
+1. `KB_PROJECT_ROOT` if provided
+2. otherwise this compiler repo root
+
+This is important for shared-vault mode. / Это важно для режима общего vault.
+
+When hooks are installed into an external repo, the hook command sets:
+
+```bash
+env KB_PROJECT_ROOT=/path/to/work-repo python3 /path/to/codex-memory-compiler/hooks/stop.py
 ```
-daily/          = source code    (your conversations - the raw material)
-LLM             = compiler       (extracts and organizes knowledge)
-knowledge/      = executable     (structured, queryable knowledge base)
-lint            = test suite     (health checks for consistency)
-queries         = runtime        (using the knowledge)
+
+That lets one compiler serve many repos safely. / Это позволяет одному compiler repo безопасно обслуживать много репозиториев.
+
+### Vault root / Корень vault
+
+Priority / Приоритет:
+1. `KB_VAULT_DIR`
+2. `.codex/vault.local` inside the active project root
+3. active project root itself
+
+All runtime content is resolved inside the selected vault root:
+- `daily/`
+- `knowledge/`
+- `reports/`
+- `.memory-compiler/`
+
+## 4. Repository Layout / Структура репозитория
+
+```text
+.codex/                         Codex config / конфигурация Codex
+daily/                          append-only source logs / append-only дневные логи
+knowledge/
+  index.md                      master catalog / главный каталог
+  log.md                        build log / журнал сборки
+  concepts/                     atomic pages / атомарные статьи
+  connections/                  cross-topic pages / связи между темами
+  qa/                           filed answers / сохраненные ответы
+hooks/
+  session-start.py              inject wiki context / подмешивает контекст вики
+  stop.py                       captures transcript window / ловит хвост транскрипта
+scripts/
+  compile.py                    daily -> knowledge
+  query.py                      answer from wiki
+  lint.py                       health checks
+  flush.py                      extract durable notes from transcript
+  config.py                     path and vault resolution
+  llm.py                        non-interactive codex exec wrapper
+  install_repo_hooks.py         mass installer for external repos
+reports/                        lint outputs / отчеты lint
 ```
 
-You don't manually organize your knowledge. You have conversations, and the LLM handles the synthesis, cross-referencing, and maintenance.
+## 5. Core Data Model / Базовая модель данных
 
----
+### `daily/` = source code / исходники
 
-## Architecture
+Daily logs are append-only session notes extracted from real Codex work. / Daily logs — это append-only заметки из реальных сессий Codex.
 
-### Layer 1: `daily/` - Conversation Logs (Immutable Source)
-
-Daily logs capture what happened in your AI coding sessions. These are the "raw sources" - append-only, never edited after the fact.
-
-```
-daily/
-├── 2026-04-01.md
-├── 2026-04-02.md
-├── ...
-```
-
-Each file follows this format:
+Format / Формат:
 
 ```markdown
 # Daily Log: YYYY-MM-DD
 
 ## Sessions
 
-### Session (HH:MM) - Brief Title
+### Session (HH:MM)
 
-**Context:** What the user was working on.
+**Context:** What the user was doing.
 
 **Key Exchanges:**
-- User asked about X, assistant explained Y
-- Decided to use Z approach because...
-- Discovered that W doesn't work when...
+- Important request or explanation
 
 **Decisions Made:**
-- Chose library X over Y because...
-- Architecture: went with pattern Z
+- Decision with reason
 
 **Lessons Learned:**
-- Always do X before Y to avoid...
-- The gotcha with Z is that...
+- Durable insight or gotcha
 
 **Action Items:**
-- [ ] Follow up on X
-- [ ] Refactor Y when time permits
+- [ ] Optional follow-up
 ```
 
-### Layer 2: `knowledge/` - Compiled Knowledge (LLM-Owned)
+Rules / Правила:
+- append-only / только дописываем
+- no cleanup rewriting unless there is a real corruption / не переписываем задним числом без реальной причины
+- keep only high-signal facts / сохраняем только высокосигнальные факты
 
-The LLM owns this directory entirely. Humans read it but rarely edit it directly.
+### `knowledge/` = compiled wiki / скомпилированная вики
 
-```
-knowledge/
-├── index.md              # Master catalog - every article with one-line summary
-├── log.md                # Append-only chronological build log
-├── concepts/             # Atomic knowledge articles
-├── connections/          # Cross-cutting insights linking 2+ concepts
-└── qa/                   # Filed query answers (compounding knowledge)
-```
+This is the durable knowledge layer. / Это долговременный слой знаний.
 
-### Layer 3: This File (AGENTS.md)
+Humans may read it, but the compiler owns its structure. / Люди могут читать его, но структурой управляет компилятор.
 
-The schema that tells the LLM how to compile and maintain the knowledge base. This is the "compiler specification."
+## 6. Knowledge Article Types / Типы статей
 
----
+### 6.1 `knowledge/index.md`
 
-## Structural Files
+The master catalog. / Главный каталог.
 
-### `knowledge/index.md` - Master Catalog
+It is the first file read during retrieval. / Это первый файл, который читается при поиске ответа.
 
-A table listing every knowledge article. This is the primary retrieval mechanism - the LLM reads this FIRST when answering any query, then selects relevant articles to read in full.
-
-Format:
+Format / Формат:
 
 ```markdown
 # Knowledge Base Index
 
 | Article | Summary | Compiled From | Updated |
 |---------|---------|---------------|---------|
-| [[concepts/supabase-auth]] | Row-level security patterns and JWT gotchas | daily/2026-04-02.md | 2026-04-02 |
-| [[connections/auth-and-webhooks]] | Token verification patterns shared across Supabase auth and Stripe webhooks | daily/2026-04-02.md, daily/2026-04-04.md | 2026-04-04 |
+| [[concepts/auth]] | Auth flow and token caveats | daily/2026-04-20.md | 2026-04-20 |
 ```
 
-### `knowledge/log.md` - Build Log
+### 6.2 `knowledge/log.md`
 
-Append-only chronological record of every compile, query, and lint operation.
+Append-only build log for compile/query/lint activity. / Append-only журнал compile/query/lint операций.
 
-Format:
+Format / Формат:
 
 ```markdown
 # Build Log
 
-## [2026-04-01T14:30:00] compile | Daily Log 2026-04-01
-- Source: daily/2026-04-01.md
-- Articles created: [[concepts/nextjs-project-structure]], [[concepts/tailwind-setup]]
+## [2026-04-20T14:30:00+03:00] compile | 2026-04-20.md
+- Source: daily/2026-04-20.md
+- Articles created: [[concepts/auth]]
 - Articles updated: (none)
-
-## [2026-04-02T09:00:00] query | "How do I handle auth redirects?"
-- Consulted: [[concepts/supabase-auth]], [[concepts/nextjs-middleware]]
-- Filed to: [[qa/auth-redirect-handling]]
 ```
 
----
+### 6.3 Concept pages / Концепты
 
-## Article Formats
+One atomic idea per file. / Один атомарный кусок знания на файл.
 
-### Concept Articles (`knowledge/concepts/`)
+Typical content / Типичное содержание:
+- architecture facts / факты об архитектуре
+- repo ownership / распределение ответственности
+- debugging lessons / уроки после отладки
+- preferences and patterns / рабочие паттерны и предпочтения
 
-One article per atomic piece of knowledge. These are facts, patterns, decisions, preferences, and lessons extracted from your conversations.
+Format / Формат:
 
 ```markdown
 ---
 title: "Concept Name"
-aliases: [alternate-name, abbreviation]
+aliases: [short-name]
 tags: [domain, topic]
 sources:
-  - "daily/2026-04-01.md"
-  - "daily/2026-04-03.md"
-created: 2026-04-01
-updated: 2026-04-03
+  - "daily/2026-04-20.md"
+created: 2026-04-20
+updated: 2026-04-20
 ---
 
 # Concept Name
 
-[2-4 sentence core explanation]
+Short explanation.
 
 ## Key Points
 
-- [Bullet points, each self-contained]
+- Self-contained point
 
 ## Details
 
-[Deeper explanation, encyclopedia-style paragraphs]
+Longer explanation.
 
 ## Related Concepts
 
-- [[concepts/related-concept]] - How it connects
+- [[concepts/other-concept]] - relation
 
 ## Sources
 
-- [[daily/2026-04-01.md]] - Initial discovery during project setup
-- [[daily/2026-04-03.md]] - Updated after debugging session
+- [[daily/2026-04-20.md]] - origin
 ```
 
-### Connection Articles (`knowledge/connections/`)
+### 6.4 Connection pages / Связи
 
-Cross-cutting synthesis linking 2+ concepts. Created when a conversation reveals a non-obvious relationship.
+Create these when one session reveals a non-obvious relationship between two or more concepts. / Создавайте их, когда сессия показывает неочевидную связь между двумя или более концептами.
+
+Format / Формат:
 
 ```markdown
 ---
 title: "Connection: X and Y"
 connects:
-  - "concepts/concept-x"
-  - "concepts/concept-y"
+  - "concepts/x"
+  - "concepts/y"
 sources:
-  - "daily/2026-04-04.md"
-created: 2026-04-04
-updated: 2026-04-04
+  - "daily/2026-04-20.md"
+created: 2026-04-20
+updated: 2026-04-20
 ---
 
 # Connection: X and Y
 
 ## The Connection
 
-[What links these concepts]
+What links them.
 
 ## Key Insight
 
-[The non-obvious relationship discovered]
+The important shared pattern.
 
 ## Evidence
 
-[Specific examples from conversations]
-
-## Related Concepts
-
-- [[concepts/concept-x]]
-- [[concepts/concept-y]]
+Specific evidence from sessions.
 ```
 
-### Q&A Articles (`knowledge/qa/`)
+### 6.5 Q&A pages / Q&A-страницы
 
-Filed answers from queries. Every complex question answered by the system can be permanently stored, making future queries smarter.
+Store complex answered questions for future reuse. / Храните сложные уже отвеченные вопросы для повторного использования.
+
+Format / Формат:
 
 ```markdown
 ---
-title: "Q: Original Question"
-question: "The exact question asked"
+title: "Q: Original question"
+question: "Original question"
 consulted:
-  - "concepts/article-1"
-  - "concepts/article-2"
-filed: 2026-04-05
+  - "concepts/x"
+  - "concepts/y"
+filed: 2026-04-20
 ---
 
-# Q: Original Question
+# Q: Original question
 
 ## Answer
 
-[The synthesized answer with [[wikilinks]] to sources]
+Synthesized answer with [[wikilinks]].
 
 ## Sources Consulted
 
-- [[concepts/article-1]] - Relevant because...
-- [[concepts/article-2]] - Provided context on...
-
-## Follow-Up Questions
-
-- What about edge case X?
-- How does this change if Y?
+- [[concepts/x]] - why relevant
 ```
 
----
+## 7. Operations / Операции
 
-## Core Operations
+### 7.1 Compile / Компиляция
 
-### 1. Compile (daily/ -> knowledge/)
+Purpose / Задача:
+- read one or more daily logs
+- update existing concept pages when possible
+- create new concept pages only when needed
+- create connection pages for cross-cutting insights
+- update `knowledge/index.md`
+- append to `knowledge/log.md`
 
-When processing a daily log:
+Compile should prefer updating over duplicating. / Компиляция должна предпочитать обновление существующего материала, а не создание дублей.
 
-1. Read the daily log file
-2. Read `knowledge/index.md` to understand current knowledge state
-3. Read existing articles that may need updating
-4. For each piece of knowledge found in the log:
-   - If an existing concept article covers this topic: UPDATE it with new information, add the daily log as a source
-   - If it's a new topic: CREATE a new `concepts/` article
-5. If the log reveals a non-obvious connection between 2+ existing concepts: CREATE a `connections/` article
-6. UPDATE `knowledge/index.md` with new/modified entries
-7. APPEND to `knowledge/log.md`
+### 7.2 Query / Запрос
 
-**Important guidelines:**
-- A single daily log may touch 3-10 knowledge articles
-- Prefer updating existing articles over creating near-duplicates
-- Use Obsidian-style `[[wikilinks]]` with full relative paths from knowledge/
-- Write in encyclopedia style - factual, concise, self-contained
-- Every article must have YAML frontmatter
-- Every article must link back to its source daily logs
+Purpose / Задача:
+- read `knowledge/index.md`
+- identify relevant pages
+- read those pages fully
+- synthesize an answer
+- optionally file the answer back into `knowledge/qa/`
 
-### 2. Query (Ask the Knowledge Base)
+The project is intentionally index-guided, not embedding-first. / Проект специально построен на index-guided retrieval, а не на embeddings-first подходе.
 
-1. Read `knowledge/index.md` (the master catalog)
-2. Based on the question, identify 3-10 relevant articles from the index
-3. Read those articles in full
-4. Synthesize an answer with `[[wikilink]]` citations
-5. If `--file-back` is specified: create a `knowledge/qa/` article and update index.md and log.md
+### 7.3 Lint / Проверка
 
-**Why this works without RAG:** At personal knowledge base scale (50-500 articles), the LLM reading a structured index outperforms cosine similarity. The LLM understands what the question is really asking and selects pages accordingly. Embeddings find similar words; the LLM finds relevant concepts.
+Minimum structural checks / Минимальные структурные проверки:
+- broken wikilinks / битые wikilinks
+- orphan pages / страницы без входящих ссылок
+- orphan source logs / нескомпилированные daily logs
+- stale pages / устаревшие статьи
+- missing backlinks / отсутствующие обратные ссылки
+- sparse pages / слишком короткие статьи
+- contradictions when LLM check is enabled / противоречия при включенной LLM-проверке
 
-### 3. Lint (Health Checks)
+## 8. Hook Lifecycle / Жизненный цикл hooks
 
-Seven checks, run periodically:
+### SessionStart
 
-1. **Broken links** - `[[wikilinks]]` pointing to non-existent articles
-2. **Orphan pages** - Articles with zero inbound links from other articles
-3. **Orphan sources** - Daily logs that haven't been compiled yet
-4. **Stale articles** - Source daily log changed since article was last compiled
-5. **Contradictions** - Conflicting claims across articles (requires LLM judgment)
-6. **Missing backlinks** - A links to B but B doesn't link back to A
-7. **Sparse articles** - Below 200 words, likely incomplete
+Triggered when Codex starts or resumes. / Срабатывает при старте или возобновлении сессии Codex.
 
-Output: a markdown report with severity levels (error, warning, suggestion).
+It should:
+- read the active vault's `knowledge/index.md`
+- read the tail of the latest daily log
+- inject both into the new session context
 
----
+### Stop
 
-## Conventions
+Triggered after a completed turn. / Срабатывает после завершенного хода.
 
-- **Wikilinks:** Use Obsidian-style `[[path/to/article]]` without `.md` extension
-- **Writing style:** Encyclopedia-style, factual, third-person where appropriate
-- **Dates:** ISO 8601 (YYYY-MM-DD for dates, full ISO for timestamps in log.md)
-- **File naming:** lowercase, hyphens for spaces (e.g., `supabase-row-level-security.md`)
-- **Frontmatter:** Every article must have YAML frontmatter with at minimum: title, sources, created, updated
-- **Sources:** Always link back to the daily log(s) that contributed to an article
+It should:
+- read the transcript JSONL
+- extract a recent window of user and assistant turns
+- save the extracted window into a temporary file
+- spawn `flush.py` as a detached background process
+- return `{"continue": true}`
 
-## Vault Path Resolution
+### Flush
 
-The compiler supports an external local vault path. Resolution order:
+Triggered by `Stop`. / Запускается из `Stop`.
 
-1. `KB_VAULT_DIR` environment variable
-2. `.codex/vault.local` file (single-line absolute or relative path)
-3. Repository root (default)
+It should:
+- avoid duplicate flushes for the same turn
+- compare against today's existing daily log tail
+- call `codex exec`
+- append only durable, non-trivial notes
+- trigger compilation if today's daily log changed
 
-All runtime content (`daily/`, `knowledge/`, `reports/`, and `.memory-compiler/`) is resolved inside the selected vault root.
+## 9. Script Contract / Контракт скриптов
 
----
+### `scripts/llm.py`
 
-## Full Project Structure
+- wraps non-interactive `codex exec`
+- requires active `codex login`
+- does not use `OPENAI_API_KEY`
 
-``` 
-llm-personal-kb/
-|-- .codex/
-|   |-- config.toml                  # Enables Codex hooks + default model settings
-|   |-- hooks.json                   # Repo-local hook configuration for Codex
-|-- .gitignore                       # Excludes runtime state, temp files, caches
-|-- AGENTS.md                        # This file - schema + full technical reference
-|-- README.md                        # Concise overview + quick start
-|-- pyproject.toml                   # Dependencies (at root so hooks can find it)
-|-- daily/                           # "Source code" - conversation logs (immutable)
-|-- knowledge/                       # "Executable" - compiled knowledge (LLM-owned)
-|   |-- index.md                     #   Master catalog - THE retrieval mechanism
-|   |-- log.md                       #   Append-only build log
-|   |-- concepts/                    #   Atomic knowledge articles
-|   |-- connections/                 #   Cross-cutting insights linking 2+ concepts
-|   |-- qa/                          #   Filed query answers (compounding knowledge)
-|-- scripts/                         # CLI tools
-|   |-- compile.py                   #   Compile daily logs -> knowledge articles
-|   |-- query.py                     #   Ask questions (index-guided, no RAG)
-|   |-- lint.py                      #   7 health checks
-|   |-- flush.py                     #   Extract memories from conversations (background)
-|   |-- config.py                    #   Path constants
-|   |-- utils.py                     #   Shared helpers
-|   |-- llm.py                       #   Codex CLI non-interactive helper
-|-- hooks/                           # Codex hooks
-|   |-- session-start.py             #   Injects knowledge into every session
-|   |-- stop.py                      #   Extracts conversation -> daily log at turn end
-|-- reports/                         # Lint reports (gitignored)
-```
+### `scripts/install_repo_hooks.py`
 
----
+- installs repo-local `.codex/` files into external repos
+- supports scanning a parent directory with many child repos
+- supports explicit extra repos
+- supports one shared external vault
 
-## Hook System (Automatic Capture)
+### `scripts/config.py`
 
-Codex discovers repo-local hooks in `.codex/hooks.json`. Hooks are currently behind a feature flag, enabled in `.codex/config.toml`. Per the current Codex docs, hooks are experimental and temporarily disabled on Windows.
+- resolves compiler root
+- resolves active project root
+- resolves active vault root
+- exposes canonical paths used by the rest of the scripts
 
-### `.codex/config.toml`
+## 10. Writing Rules / Правила написания
 
-```toml
-model = "gpt-5.4"
-model_reasoning_effort = "medium"
+Use these rules for compiled wiki content:
+- use factual, compact prose / используйте фактический и компактный стиль
+- prefer self-contained pages / предпочитайте самодостаточные страницы
+- prefer stable names / используйте стабильные имена файлов
+- use lowercase kebab-case filenames / имена файлов в lowercase kebab-case
+- use ISO dates / даты в ISO формате
+- use Obsidian-style `[[wikilinks]]` without `.md` / используйте wikilinks без `.md`
+- keep source attribution in every page / каждая статья должна ссылаться на источники
+- prefer updates over near-duplicates / обновляйте, а не плодите похожие страницы
 
-[features]
-codex_hooks = true
-```
+## 11. Safety Rules / Правила безопасности
 
-### `.codex/hooks.json` Format
+- Runtime writes must stay inside the active vault. / Runtime-записи должны оставаться внутри активного vault.
+- Hooks must stay lightweight and non-blocking. / Hooks должны быть легкими и не блокировать пользовательский ход.
+- `flush.py` and `compile.py` may run in the background. / `flush.py` и `compile.py` могут работать в фоне.
+- A failed model call must not corrupt the vault. / Ошибка модели не должна ломать vault.
+- The compiler must tolerate empty or partially initialized vaults. / Компилятор должен терпимо работать с пустым или частично инициализированным vault.
 
-```json
-{
-  "hooks": {
-    "SessionStart": [{ "matcher": "startup|resume", "hooks": [{ "type": "command", "command": "python3 hooks/session-start.py", "timeout": 15 }] }],
-    "Stop": [{ "hooks": [{ "type": "command", "command": "python3 hooks/stop.py", "timeout": 15 }] }]
-  }
-}
-```
+## 12. Recommended Deployment Pattern / Рекомендуемый паттерн разворачивания
 
-Repo-local hooks are preferable because they travel with the repository and keep behavior consistent across machines. The commands resolve from the git root so they still work when Codex is launched from a subdirectory.
+### One-folder project / Проект из одной папки
 
-### Hook Details
+- clone this repo
+- keep knowledge inside this repo
+- work here directly in Codex
 
-**`session-start.py`** (SessionStart)
-- Pure local I/O, no API calls, runs in under 1 second
-- Reads `knowledge/index.md` and the most recent daily log
-- Outputs JSON to stdout: `{"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "..."}}`
-- Codex sees the knowledge base index at the start of every session
-- Max context: 20,000 characters
+### Multi-repo product / Продукт из многих репозиториев
 
-**`stop.py`** (Stop)
-- Reads hook input from stdin (JSON with `session_id`, `turn_id`, `transcript_path`, `cwd`)
-- Extracts a short trailing transcript window instead of waiting for session close
-- Spawns `scripts/flush.py` as a background process
-- Returns `{"continue": true}` so the current turn ends normally
-- Recursion guard: exits immediately if `CODEX_INVOKED_BY` env var is set
+- clone this repo once
+- choose one external vault
+- run `scripts/install_repo_hooks.py` against all work repos
+- keep daily and compiled wiki content in the external vault
+- open that vault in Obsidian if desired
 
-**Why `Stop` instead of `SessionEnd` / `PreCompact`?** Codex currently exposes `Stop`, but not Claude-style `SessionEnd` or `PreCompact` hooks. Running memory extraction after each completed turn preserves the same architecture and intent: durable lessons are captured automatically without waiting for the session to close.
+## 13. Example Multi-Repo Installation / Пример установки для multi-repo проекта
 
-### Background Flush Process (`flush.py`)
-
-Spawned by the `Stop` hook as a background process:
-- **Windows:** `CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS` flags
-- **Mac/Linux:** `start_new_session=True`
-
-This ensures `flush.py` survives after the hook process exits.
-
-**What flush.py does:**
-1. Sets `CODEX_INVOKED_BY=memory_flush` env var (prevents recursive hook firing)
-2. Reads the pre-extracted conversation context from the temp `.md` file
-3. Skips if context is empty or if the same `session_id + turn_id` was flushed within 60 seconds
-4. Reads the tail of today's daily log to reduce duplicate notes across adjacent turns
-5. Calls `codex exec` through `scripts/llm.py`
-6. Codex decides what's worth saving and returns structured notes or `FLUSH_OK`
-7. Appends only non-empty, non-duplicate results to `daily/YYYY-MM-DD.md`
-8. Cleans up temp context file
-9. **Post-flush auto-compilation:** If today's daily log has changed since its last compilation (hash comparison against `state.json`), spawns `compile.py` as another detached background process. This means successful Codex flushes propagate into `knowledge/` without waiting for a cron job or end-of-day window.
-
-### JSONL Transcript Format
-
-Codex provides a `transcript_path` in hook input. The extractor is intentionally tolerant because transcript payloads can vary by runtime version. It handles both nested and flat JSONL shapes, including:
-
-```python
-entry = json.loads(line)
-msg = entry.get("message", {})
-role = msg.get("role", "")     # "user" or "assistant"
-content = msg.get("content", "")  # string or list of content blocks
-```
-
-Content can be a string or a list of blocks (`{"type": "text", "text": "..."}` dicts).
-
----
-
-## Script Details
-
-### compile.py - The Compiler
-
-Uses `codex exec` with a JSON schema for structured output:
-
-```python
-result = subprocess.run(
-    [
-        "codex", "exec", "--json", "--ephemeral",
-        "--disable", "codex_hooks", "--sandbox", "read-only",
-        "--output-schema", schema_path, "-"
-    ],
-    input=prompt_text,
-)
-```
-
-- Builds a prompt with: AGENTS.md schema, current index, all existing articles, and the daily log
-- The model returns a structured write plan instead of editing files directly
-- `utils.apply_write_operations()` applies validated `write` / `append` operations locally
-- Incremental: tracks SHA-256 hashes of daily logs in `state.json`, skips unchanged files
-- Tracks token usage from Codex CLI's JSON events
-
-**CLI:**
 ```bash
-python3 scripts/compile.py              # compile new/changed only
-python3 scripts/compile.py --all        # force recompile everything
-python3 scripts/compile.py --file daily/2026-04-01.md
-python3 scripts/compile.py --dry-run
+python3 scripts/install_repo_hooks.py \
+  --scan-dir /path/to/product-repos \
+  --repo /path/to/local-cluster-repo \
+  --repo /path/to/legacy-backend-repo \
+  --repo /path/to/api-repo \
+  --repo /path/to/infra-repo \
+  --repo /path/to/service-repo \
+  --vault /path/to/shared-product-vault
 ```
 
-### query.py - Index-Guided Retrieval
+This connects:
+- all git repos inside `/path/to/product-repos`
+- one local cluster repo
+- any extra backend, API, infra, or service repos listed with `--repo`
+- one shared external vault for the whole product
 
-Loads the entire knowledge base into context (index + all articles). No RAG.
+## 14. Runtime Assumptions / Предпосылки рантайма
 
-At personal KB scale (50-500 articles), the LLM reading a structured index outperforms vector similarity. The LLM understands what you're really asking; cosine similarity just finds similar words.
-
-**CLI:**
-```bash
-python3 scripts/query.py "What auth patterns do I use?"
-python3 scripts/query.py "What's my error handling strategy?" --file-back
-```
-
-With `--file-back`, the model returns both the answer and a structured write plan for the Q&A article, updated index, and build log entry. This is the compounding loop - every question makes the KB smarter.
-
-### lint.py - Health Checks
-
-Seven checks:
-
-| Check | Type | Catches |
-|-------|------|---------|
-| Broken links | Structural | `[[wikilinks]]` to non-existent articles |
-| Orphan pages | Structural | Articles with zero inbound links |
-| Orphan sources | Structural | Daily logs not yet compiled |
-| Stale articles | Structural | Source logs changed since compilation |
-| Missing backlinks | Structural | A links to B but B doesn't link back |
-| Sparse articles | Structural | Under 200 words |
-| Contradictions | LLM | Conflicting claims across articles |
-
-**CLI:**
-```bash
-python3 scripts/lint.py                    # all checks
-python3 scripts/lint.py --structural-only  # skip LLM check (free)
-```
-
-Reports saved to `reports/lint-YYYY-MM-DD.md`.
-
----
-
-## State Tracking
-
-`.memory-compiler/state.json` tracks:
-- `ingested` - map of daily log filenames to SHA-256 hashes, compilation timestamps, token usage, and model metadata
-- `query_count` - total queries run
-- `last_lint` - timestamp of most recent lint
-- `total_input_tokens` / `total_output_tokens` / `total_tokens` - cumulative Codex CLI usage
-- `total_cost` - cumulative best-effort cost estimate when the active model has a local price mapping
-
-`.memory-compiler/last-flush.json` tracks flush deduplication (`session_id`, `turn_id`, `timestamp`).
-
-Both are gitignored and regenerated automatically.
-
----
-
-## Dependencies
-
-`pyproject.toml` (at project root):
-- `tzdata>=2024.1` - Timezone data
-- Python 3.12+
-
-No API key is required when the user is already authenticated in Codex CLI.
-Runtime requirements:
 - `codex` must be on `PATH`
 - `codex login status` must report an active session
-- Repo-local `.codex/config.toml` sets the default model and hook flag
-
-`uv` is optional for development convenience, but the runtime path for hooks and scripts uses plain `python3`.
-
----
-
-## Costs
-
-This CLI-native port does not rely on direct API billing.
-
-Operational usage now depends on:
-- Your Codex account limits and login method
-- The model selected in Codex config
-- The size of `daily/`, `knowledge/`, and prompt context
-
-The project records token usage from Codex CLI in `.memory-compiler/state.json`, but it does not attempt to compute API-style dollar costs.
-
----
-
-## Customization
-
-### Additional Article Types
-
-Add directories like `people/`, `projects/`, `tools/` to `knowledge/`. Define the article format in this file (AGENTS.md) and update `utils.py`'s `list_wiki_articles()` to include them.
-
-### Obsidian Integration
-
-The knowledge base is pure markdown with `[[wikilinks]]` - works natively in Obsidian. Point a vault at `knowledge/` for graph view, backlinks, and search.
-
-### Scaling Beyond Index-Guided Retrieval
-
-At ~2,000+ articles / ~2M+ tokens, the index becomes too large for the context window. At that point, add hybrid RAG (keyword + semantic search) as a retrieval layer before the LLM. See Karpathy's recommendation of `qmd` by Tobi Lutke for search at scale.
+- Python 3.12+ is expected
+- `uv` is optional and not required for runtime hooks
+- hooks are expected to be unavailable on Windows while Codex keeps that limitation

@@ -1,8 +1,8 @@
-"""Path constants and configuration for the personal knowledge base."""
+"""Path constants and runtime configuration for the knowledge compiler."""
 
 import os
-from pathlib import Path
 from datetime import datetime, timezone
+from pathlib import Path
 
 # ── Paths ──────────────────────────────────────────────────────────────
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -10,23 +10,39 @@ SCRIPTS_DIR = ROOT_DIR / "scripts"
 HOOKS_DIR = ROOT_DIR / "hooks"
 AGENTS_FILE = ROOT_DIR / "AGENTS.md"
 
+PROJECT_ROOT_ENV = "KB_PROJECT_ROOT"
 VAULT_OVERRIDE_ENV = "KB_VAULT_DIR"
-VAULT_OVERRIDE_FILE = ROOT_DIR / ".codex" / "vault.local"
 STATE_SUBDIR = ".memory-compiler"
 
 
-def _resolve_vault_dir() -> Path:
-    """Resolve vault directory from env/file override, falling back to repo root."""
-    override = os.getenv(VAULT_OVERRIDE_ENV, "").strip()
-    if not override and VAULT_OVERRIDE_FILE.exists():
-        override = VAULT_OVERRIDE_FILE.read_text(encoding="utf-8").strip()
-
+def _resolve_project_root() -> Path:
+    """Resolve the project whose local `.codex` settings should be used."""
+    override = os.getenv(PROJECT_ROOT_ENV, "").strip()
     if not override:
         return ROOT_DIR
 
     candidate = Path(override).expanduser()
     if not candidate.is_absolute():
         candidate = (ROOT_DIR / candidate).resolve()
+    return candidate
+
+
+PROJECT_ROOT = _resolve_project_root()
+VAULT_OVERRIDE_FILE = PROJECT_ROOT / ".codex" / "vault.local"
+
+
+def _resolve_vault_dir() -> Path:
+    """Resolve vault directory from env/file override, falling back to project root."""
+    override = os.getenv(VAULT_OVERRIDE_ENV, "").strip()
+    if not override and VAULT_OVERRIDE_FILE.exists():
+        override = VAULT_OVERRIDE_FILE.read_text(encoding="utf-8").strip()
+
+    if not override:
+        return PROJECT_ROOT
+
+    candidate = Path(override).expanduser()
+    if not candidate.is_absolute():
+        candidate = (PROJECT_ROOT / candidate).resolve()
     return candidate
 
 

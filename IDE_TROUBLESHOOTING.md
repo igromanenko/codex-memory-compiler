@@ -1,190 +1,110 @@
-# IDE Troubleshooting
+# IDE Troubleshooting / Проблемы IDE
 
-This guide covers the most common IDE-side problems when working with this repository in Codex and IntelliJ IDEA / PyCharm.
+This file is for stale local state: IDE refresh problems, old hook config, and confusing Codex behavior. / Этот файл для stale local state: проблем с обновлением IDE, старых hook-конфигов и странного поведения Codex.
 
-## What This Guide Is For
+## 1. `.codex` Is A File, Not A Directory / `.codex` оказался файлом, а не папкой
 
-Use this guide when the repository on disk is correct, but the IDE shows stale files, missing files, empty diffs, or old hook errors.
+Symptom / Симптом:
+- the repo has `.codex` as a zero-byte file
+- Codex cannot read `.codex/config.toml` or `.codex/hooks.json`
 
-Typical symptoms:
-
-- the project tree still shows deleted files like `hooks/pre-compact.py`
-- new files such as `.codex/hooks.json`, `hooks/stop.py`, `CODEX_USAGE.md`, or tests do not appear
-- the commit tool window shows a file, but the diff preview is blank
-- Codex shows an old hook error such as `SessionStart hook (failed) code 127` even after the hook command was fixed
-
-## Current Expected Repository State
-
-The Codex-native version of the project should include:
-
-- `.codex/config.toml`
-- `.codex/hooks.json`
-- `hooks/session-start.py`
-- `hooks/stop.py`
-- `scripts/llm.py`
-- `CODEX_USAGE.md`
-
-The Claude-specific hook setup should no longer be used.
-
-## Current Expected Hook Commands
-
-The active hook commands are:
-
-```json
-{
-  "hooks": {
-    "SessionStart": [
-      {
-        "hooks": [
-          {
-            "command": "python3 hooks/session-start.py"
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "command": "python3 hooks/stop.py"
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
-If your IDE or Codex still behaves as if hooks are running through `uv` or `.claude/settings.json`, you are almost certainly looking at stale state.
-
-## First Things To Try
-
-### 1. Synchronize the IDE
-
-In IntelliJ IDEA:
-
-- `File -> Synchronize`
-- shortcut: `Ctrl+Alt+Y`
-
-This forces the IDE to refresh the virtual file system from disk.
-
-### 2. Reopen the Project
-
-Close the project and open it again from the real repository path:
-
-```text
-/home/i/IdeaProjects/codex-memory-compiler
-```
-
-This matters if the IDE has cached an older tree or attached an editor tab to a deleted file revision.
-
-### 3. Restart the IDE
-
-If the tree and commit window still disagree:
-
-- close IntelliJ IDEA completely
-- reopen the project
-
-### 4. Invalidate Caches
-
-If the tree still shows deleted files or blank diffs:
-
-- `File -> Invalidate Caches / Restart`
-- choose invalidate and restart
-
-This is the heavy reset for broken IDEA file-index state.
-
-## If The Project Tree Looks Wrong
-
-If the project tree still shows old files:
-
-- confirm the real files on disk with a terminal
-- compare that with the tree in the IDE
-
-Useful commands:
+Fix / Исправление:
+- run the installer script again
+- it replaces an empty `.codex` file with a real `.codex/` directory
 
 ```bash
-pwd
-find . -maxdepth 3 -type f | sort
-git status --short
+python3 scripts/install_repo_hooks.py --repo /path/to/repo --vault /path/to/vault
 ```
 
-If the terminal shows the right files and the IDE does not, the problem is IDE refresh, not repository state.
+If `.codex` is a non-empty file, move it away manually first. / Если `.codex` — непустой файл, сначала вручную уберите его.
 
-## If The Diff Preview Is Blank
+## 2. IDE Shows Old Hook Commands / IDE показывает старые hook-команды
 
-This usually means the IDE commit UI is holding onto stale document state.
+Symptom / Симптом:
+- IDE still shows `uv run ...`
+- IDE still shows old `.claude/...` references
+- files look correct on disk, but the editor view is stale
 
-Try this sequence:
+Fix / Исправление:
+- refresh the project in the IDE
+- invalidate caches if needed
+- reopen the repo window
 
-1. close the diff tab
-2. run `File -> Synchronize`
-3. reopen the changed file from the commit pane
-4. if still blank, restart the IDE
+The current runtime hook style is plain `python3`, not `uv run`. / Текущий runtime hook style использует обычный `python3`, а не `uv run`.
 
-If needed, verify the diff in terminal:
+## 3. Codex Uses The Wrong Vault / Codex пишет не в тот vault
+
+Check in this order / Проверяйте в таком порядке:
+1. `KB_VAULT_DIR`
+2. `.codex/vault.local`
+3. the hook command's `KB_PROJECT_ROOT`
+
+For connected external repos, the hook command should look like this:
 
 ```bash
-git diff -- README.md
-git diff -- CODEX_USAGE.md
-git diff -- .codex/hooks.json
+env KB_PROJECT_ROOT=/path/to/repo python3 /path/to/codex-memory-compiler/hooks/stop.py
 ```
 
-If terminal diff is present but the IDE pane is empty, the repository is fine and the UI cache is stale.
+## 4. Hooks Exist But Nothing Is Saved / Hooks есть, но ничего не сохраняется
 
-## If Codex Still Reports Hook Exit Code 127
+Check / Проверьте:
 
-Code `127` usually means `command not found`.
+```bash
+codex login status
+```
 
-For this repository, that typically means Codex is still trying to execute an old hook command such as:
+Then inspect the active vault logs:
 
-- `uv run ...`
-- a command from `.claude/settings.json`
-- a shell command that depends on expansion not available in the current hook runner
+```bash
+ls -la /path/to/vault/.memory-compiler
+tail -n 50 /path/to/vault/.memory-compiler/flush.log
+```
 
-The fixed commands are plain `python3` commands:
+Typical causes / Типичные причины:
+- Codex is not logged in / Codex не залогинен
+- the hook is pointed at the wrong project root / hook указывает не на тот project root
+- the vault path is wrong / неверный путь vault
+- the transcript window was empty / окно транскрипта оказалось пустым
+
+## 5. SessionStart Does Not Inject Context / SessionStart не подмешивает контекст
+
+Run manually / Запустите вручную:
 
 ```bash
 python3 hooks/session-start.py
-python3 hooks/stop.py
 ```
 
-Verify them manually:
+Expected / Ожидается:
+- valid JSON on stdout
+- no traceback
+
+If it works manually but not inside Codex, refresh the repo and reopen the session. / Если вручную работает, а внутри Codex нет — обновите проект и переоткройте сессию.
+
+## 6. Background Flush Or Compile Looks Stuck / Flush или compile зависли в фоне
+
+Check the active vault state directory:
 
 ```bash
-python3 hooks/session-start.py
-printf '{"session_id":"manual-test","turn_id":"manual-turn","transcript_path":"/tmp/nope.jsonl"}' | python3 hooks/stop.py
+ls -la /path/to/vault/.memory-compiler
+tail -n 100 /path/to/vault/.memory-compiler/flush.log
+tail -n 100 /path/to/vault/.memory-compiler/compile.log
 ```
 
-If those work in terminal but Codex still shows code `127`, restart Codex so it reloads `.codex/hooks.json`.
+Useful signals / Полезные сигналы:
+- `Stop fired`
+- `Spawned flush.py`
+- `Result: saved to daily log`
+- `Post-flush compilation triggered`
 
-## Why `.idea/` Is Ignored
+## 7. Reinstall Everything Cleanly / Переустановить всё начисто
 
-Local JetBrains files are machine-specific and often cause noise in the commit panel.
-
-This repository ignores:
-
-```text
-.idea/
-```
-
-That keeps the commit view focused on actual project files instead of editor metadata.
-
-## Sanity Check Commands
-
-If you want to verify the project state quickly:
+If hook files drifted, just reinstall them from this compiler repo:
 
 ```bash
-python3 -m py_compile scripts/*.py hooks/*.py
-python3 -m unittest discover -s tests -v
-python3 hooks/session-start.py
-python3 scripts/query.py "What retrieval approach does this knowledge base prefer?"
+python3 scripts/install_repo_hooks.py \
+  --scan-dir /path/to/parent \
+  --repo /path/to/extra-repo \
+  --vault /path/to/shared-vault
 ```
 
-## If You Need The Deeper Technical Explanation
-
-Use:
-
-- [README.md](/home/i/IdeaProjects/codex-memory-compiler/README.md)
-- [CODEX_USAGE.md](/home/i/IdeaProjects/codex-memory-compiler/CODEX_USAGE.md)
-- [AGENTS.md](/home/i/IdeaProjects/codex-memory-compiler/AGENTS.md)
+That is the preferred recovery path. / Это и есть предпочтительный способ восстановления.

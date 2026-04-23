@@ -1,117 +1,153 @@
 # Codex Memory Compiler
 
-**Your Codex conversations compile themselves into a searchable knowledge base.**
+Build a wiki from Codex conversations. / Собирает вики-базу знаний из диалогов Codex.
 
-This project keeps Karpathy's LLM knowledge-base architecture intact, but adapts the implementation for Codex CLI. Raw session history lands in `daily/`, structured knowledge is compiled into `knowledge/`, and retrieval stays index-guided rather than embedding-driven. The integration layer is fully CLI-native: Codex hooks drive capture, and the Python scripts call `codex exec` non-interactively instead of using an API SDK.
+This repository follows Andrej Karpathy's "LLM knowledge base" idea:
+- `daily/` = raw source logs / сырой слой разговоров
+- `knowledge/` = compiled wiki / скомпилированная вики
+- `AGENTS.md` = compiler rules / правила компилятора
 
-## What Changed For Codex CLI
+## Why This Exists / Зачем это нужно
 
-- `AGENTS.md` remains the compiler spec and repository operating manual. Codex reads it natively.
-- `.codex/hooks.json` replaces `.claude/settings.json`.
-- Codex `SessionStart` still injects the knowledge base into new sessions.
-- Codex has no `SessionEnd` or `PreCompact` hook today, so automatic memory capture runs from the `Stop` hook after each completed turn.
-- `scripts/compile.py`, `scripts/query.py`, `scripts/lint.py`, and `scripts/flush.py` use `codex exec` as their LLM backend.
-- No `OPENAI_API_KEY` is required when you are already logged into Codex CLI.
+- Work in Codex as usual. / Вы работаете в Codex как обычно.
+- Important decisions and lessons are saved into daily logs. / Важные решения и выводы попадают в daily logs.
+- Daily logs are compiled into reusable wiki pages. / Daily logs компилируются в wiki-страницы.
+- New Codex sessions start with your current knowledge base. / Новые сессии Codex стартуют уже с вашей базой знаний.
 
-## Quick Start
+## Two Modes / Два режима
 
-1. Make sure Codex CLI is installed and authenticated:
+### 1. Single Repo Mode / Режим "один репозиторий"
+
+Use this when one repository is the whole project. / Используйте, если весь проект живет в одном репозитории.
+
+- `daily/`, `knowledge/`, `reports/`, `.memory-compiler/` live inside this repo.
+- Nothing else is required. / Ничего дополнительно подключать не нужно.
+
+### 2. Shared Vault Mode / Режим "общий vault"
+
+Use this when the product spans many repos. / Используйте, если система разбита на много репозиториев.
+
+- This repo stays the compiler. / Этот репозиторий остается компилятором.
+- Working repos get local `.codex/` hook files. / Рабочие репозитории получают свои `.codex/` hook-файлы.
+- All of them write into one external vault. / Все они пишут в один внешний vault.
+- The external vault works well as an Obsidian wiki. / Внешний vault удобно открывать как Obsidian-вики.
+
+## Requirements / Требования
 
 ```bash
 codex --version
 codex login status
+python3 --version
 ```
 
-2. Runtime dependencies are minimal. If you want an isolated environment for development, use either:
+Need / Нужно:
+- `codex` on `PATH`
+- active Codex login / активный вход в Codex
+- Python 3.12+
+
+Optional / Опционально:
 
 ```bash
 uv sync
 ```
 
-or:
+or / или
 
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install tzdata
 ```
 
-3. Open the repository in Codex. Repo-local `.codex/config.toml` enables hooks, and `.codex/hooks.json` registers `SessionStart` and `Stop`.
+`uv` is optional. Runtime hooks use plain `python3`. / `uv` необязателен. Runtime hooks работают через обычный `python3`.
 
-From there, each completed Codex turn can contribute durable notes to `daily/YYYY-MM-DD.md`. After each successful flush, if today's daily log changed since its last compile, `scripts/flush.py` triggers automatic compilation of that day's log.
+## Quick Start / Быстрый старт
 
-The runtime behavior is incremental but date-scoped:
+### Single Repo Mode / Один репозиторий
 
-- Every successful flush appends to the same `daily/YYYY-MM-DD.md` file for the current date.
-- Multiple Codex sessions on the same day accumulate into that one daily log instead of creating separate per-session source files.
-- After each append, `flush.py` compares today's log hash with `.memory-compiler/state.json`.
-- If the hash changed since the last compile, `flush.py` spawns `scripts/compile.py` in the background immediately.
-- `compile.py` recompiles the full daily log, updating existing `knowledge/` articles when topics overlap and creating new ones only when the log introduces genuinely new concepts.
-- There is no cron dependency and no end-of-day waiting window; if the machine is off, nothing runs until the next successful Codex-triggered flush.
+1. Clone this repo. / Клонируйте этот репозиторий.
+2. Make sure Codex login works. / Проверьте, что Codex авторизован.
+3. Open this repo in Codex. / Откройте этот репозиторий в Codex.
+4. Work normally. Hooks save memory automatically. / Работайте как обычно. Hooks сохраняют память автоматически.
 
-## How It Works
+### Shared Vault Mode / Общий vault
 
-```text
-Codex turn -> Stop hook -> flush.py extracts durable notes
-           -> daily/YYYY-MM-DD.md -> compile.py -> knowledge/concepts/, connections/, qa/
-SessionStart hook -> inject index + recent log into next Codex session
+1. Choose the vault path. / Выберите путь к vault.
+2. Install repo-local hook files into every working repo. / Установите repo-local hooks во все рабочие репозитории.
+3. Open any connected repo in Codex. / Открывайте любой подключенный репозиторий в Codex.
+4. All sessions write into the same wiki. / Все сессии будут писать в одну вики.
+
+Example / Пример:
+
+```bash
+python3 scripts/install_repo_hooks.py \
+  --scan-dir /path/to/product-repos \
+  --repo /path/to/infra-repo \
+  --repo /path/to/api-repo \
+  --repo /path/to/frontend-repo \
+  --vault /path/to/shared-product-vault
 ```
 
-- `hooks/session-start.py` injects `knowledge/index.md` plus the tail of the most recent daily log.
-- `hooks/stop.py` extracts the latest transcript window and spawns `scripts/flush.py` in the background.
-- `scripts/flush.py` runs `codex exec` to decide what is worth preserving, appends only new, high-signal notes, and then triggers background compilation when today's daily log changed.
-- `scripts/compile.py` turns daily logs into structured concept and connection articles.
-- `scripts/query.py` answers questions using index-guided retrieval and can file answers back into `knowledge/qa/`.
-- `scripts/lint.py` runs structural checks and an optional contradiction pass.
+That command:
+- scans every git repo directly inside `/path/to/product-repos`
+- also connects any extra repos listed with `--repo`
+- writes `.codex/config.toml`, `.codex/hooks.json`, `.codex/vault.local`
+- points all of them at one shared vault
 
-## Key Commands
+## How It Works / Как это работает
+
+```text
+Codex session starts
+-> SessionStart hook injects current wiki context
+-> you work in the repo
+-> Stop hook captures the last transcript window
+-> flush.py writes durable notes into daily/YYYY-MM-DD.md
+-> compile.py updates knowledge/
+-> next session starts with the refreshed index and recent log
+```
+
+Main pieces / Основные части:
+- `hooks/session-start.py` injects `knowledge/index.md` and the latest daily log tail.
+- `hooks/stop.py` extracts recent transcript text and launches background flush.
+- `scripts/flush.py` appends high-signal notes into `daily/`.
+- `scripts/compile.py` turns daily logs into wiki pages.
+- `scripts/query.py` answers questions from the wiki.
+- `scripts/lint.py` checks wiki health.
+
+## Main Commands / Основные команды
 
 ```bash
 python3 scripts/compile.py
 python3 scripts/compile.py --all
-python3 scripts/query.py "What auth patterns do I use?"
-python3 scripts/query.py "What auth patterns do I use?" --file-back
+python3 scripts/query.py "What patterns do I use?"
+python3 scripts/query.py "What patterns do I use?" --file-back
 python3 scripts/lint.py
-python3 scripts/lint.py --structural-only
+python3 scripts/install_repo_hooks.py --repo /path/to/repo --vault /path/to/vault
 ```
 
-## Environment
+## Vault Resolution / Как выбирается vault
 
-- Python 3.12+
-- `codex` on `PATH`
-- Active Codex login session via `codex login`
+Priority / Приоритет:
+1. `KB_VAULT_DIR`
+2. `.codex/vault.local`
+3. repository root / корень репозитория
 
-`uv` is optional and only useful if you want a managed virtualenv for development or test runs.
+For hooks installed into external repos, the compiler uses `KB_PROJECT_ROOT` to read that repo's local `.codex/vault.local`. / Для hooks, установленных в чужие репозитории, компилятор использует `KB_PROJECT_ROOT`, чтобы читать локальный `.codex/vault.local` именно того репозитория.
 
-The project defaults to the model configured in `.codex/config.toml`, or whatever `codex exec` resolves in your local Codex setup.
+## Repository Map / Карта репозитория
 
-## Custom Vault Path
-
-By default, the vault is the repository root. You can point the compiler to a personal vault directory in two ways:
-
-1. Local file override (recommended for per-repo setup):
-
-```bash
-echo "/home/i/projects/project1/project1_vault" > .codex/vault.local
+```text
+.codex/                     local Codex config / локальная конфигурация Codex
+daily/                      raw conversation logs / сырые дневные логи
+knowledge/                  compiled wiki / скомпилированная вики
+hooks/                      SessionStart and Stop hooks / hooks SessionStart и Stop
+scripts/                    compiler, query, lint, flush, installer / скрипты
+reports/                    lint reports / отчеты lint
+AGENTS.md                   compiler specification / спецификация компилятора
+CODEX_USAGE.md              operator guide / практическая инструкция
 ```
 
-2. Environment override:
+## Open Next / Что открыть дальше
 
-```bash
-export KB_VAULT_DIR=/home/i/projects/project1/project1_vault
-```
-
-When set, the scripts and hooks read/write `daily/`, `knowledge/`, `reports/`, and `.memory-compiler/` inside that vault path.
-
-## Limitations
-
-- Codex hooks are currently experimental.
-- OpenAI's Codex hooks docs currently state that hooks are temporarily disabled on Windows.
-- Because Codex does not expose `SessionEnd` or `PreCompact`, this port captures memory at `Stop` time instead.
-
-## Technical Reference
-
-See **[AGENTS.md](AGENTS.md)** for the full compiler specification: article formats, hook architecture, daily log schema, query/file-back behavior, lint checks, and customization points.
-
-For an operator-focused guide on setup, hooks, commands, troubleshooting, and Codex-specific nuances, see **[CODEX_USAGE.md](CODEX_USAGE.md)**.
-
-For IntelliJ IDEA / PyCharm refresh issues, stale diffs, and old hook-state problems, see **[IDE_TROUBLESHOOTING.md](IDE_TROUBLESHOOTING.md)**.
+- [CODEX_USAGE.md](CODEX_USAGE.md) for step-by-step setup and operations. / Для пошаговой настройки и работы.
+- [AGENTS.md](AGENTS.md) for the compiler rules and file formats. / Для правил компилятора и форматов файлов.
+- [IDE_TROUBLESHOOTING.md](IDE_TROUBLESHOOTING.md) for local IDE refresh problems. / Для проблем с IDE и stale state.

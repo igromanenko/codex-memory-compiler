@@ -1,38 +1,10 @@
-# Using This Project With Codex
+# Codex Usage / Работа с Codex
 
-This guide explains how to run the memory compiler through Codex CLI, what parts are automatic, and what to do when something goes wrong.
+This file is the practical operator guide. / Это практическая инструкция для запуска и ежедневной работы.
 
-## What This Project Does
+## 1. What You Need / Что нужно
 
-The project turns Codex conversations into a personal markdown knowledge base.
-
-It keeps the original three-layer architecture:
-
-- `daily/` is the raw source layer. It stores append-only daily notes extracted from conversations.
-- `knowledge/` is the compiled layer. It stores structured concept, connection, and Q&A articles.
-- `AGENTS.md` is the compiler spec. It tells the model how to structure articles, logs, and lint rules.
-
-In practice the loop is:
-
-```text
-Codex session starts
--> SessionStart hook injects index + recent log
--> you work normally in Codex
--> Stop hook captures recent transcript
--> flush.py appends durable notes into daily/YYYY-MM-DD.md
--> compile.py turns daily logs into knowledge articles
--> query.py and lint.py operate on the compiled knowledge base
-```
-
-## Requirements
-
-You need:
-
-- `codex` installed and available on `PATH`
-- an active Codex login
-- `python3` available on `PATH`
-
-Check that first:
+Required / Обязательно:
 
 ```bash
 codex --version
@@ -40,66 +12,54 @@ codex login status
 python3 --version
 ```
 
-If `uv` is not installed, that is not a blocker. A plain virtualenv is enough:
+Expected / Ожидается:
+- `codex login status` says `Logged in`
+- Python 3.12+
+- Linux or macOS preferred
+
+Optional / Опционально:
+
+```bash
+uv sync
+```
+
+or / или
 
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install tzdata
 ```
 
-If `codex login status` does not say `Logged in`, run:
+The runtime path does not depend on `uv`. / Runtime-путь не зависит от `uv`.
 
-```bash
-codex login
-```
+## 2. Choose Your Storage Mode / Выберите режим хранения
 
-## Important Runtime Rule
+### Mode A: Local Repo Storage / Локальное хранение в репозитории
 
-The project is designed to work in Codex CLI mode without `OPENAI_API_KEY`.
+Use this when one repo is one project. / Используйте, если один репозиторий и есть весь проект.
 
-All model-backed operations go through non-interactive `codex exec`, not through the OpenAI API SDK. That means:
+Behavior / Поведение:
+- `daily/`, `knowledge/`, `reports/`, `.memory-compiler/` stay in this repo
+- no external vault is needed / внешний vault не нужен
 
-- no API key is needed
-- your Codex account limits still apply
-- if Codex is rate-limited, `compile/query/lint/flush` can fail until the limit resets
+### Mode B: Shared External Vault / Общий внешний vault
 
-## Use A Personal Vault Directory
+Use this when many repos belong to one system. / Используйте, если система состоит из многих репозиториев.
 
-By default, this repository acts as the vault root. To store knowledge in another local path (for example a project vault), set one of these overrides:
+Behavior / Поведение:
+- this repo stays the compiler / этот репозиторий остается компилятором
+- working repos only get `.codex/` files / рабочие репозитории получают только `.codex/`
+- all knowledge is stored in one external vault / все знания хранятся в одном внешнем vault
 
-1. Local override file in this repo:
+## 3. Manual Setup For One Repo / Ручная настройка для одного репозитория
 
-```bash
-echo "/home/i/projects/project1/project1_vault" > .codex/vault.local
-```
+If you want the default local mode, you only need this repo itself. / Если нужен локальный режим по умолчанию, достаточно этого репозитория.
 
-2. Environment variable:
+Open it in Codex and keep these files enabled:
+- `.codex/config.toml`
+- `.codex/hooks.json`
 
-```bash
-export KB_VAULT_DIR=/home/i/projects/project1/project1_vault
-```
-
-Override priority is:
-
-1. `KB_VAULT_DIR`
-2. `.codex/vault.local`
-3. repository root (default)
-
-With an override, runtime data goes to that vault path:
-
-- `daily/`
-- `knowledge/`
-- `reports/`
-- `.memory-compiler/` (state + logs)
-
-## Hook Configuration
-
-Repo-local hook config lives in:
-
-- [`.codex/config.toml`](/home/i/IdeaProjects/codex-memory-compiler/.codex/config.toml)
-- [`.codex/hooks.json`](/home/i/IdeaProjects/codex-memory-compiler/.codex/hooks.json)
-
-Current hook commands are intentionally simple:
+Current runtime hooks are plain commands:
 
 ```json
 {
@@ -129,59 +89,101 @@ Current hook commands are intentionally simple:
 }
 ```
 
-This is deliberate:
+## 4. Mass Setup For Many Repos / Массовая настройка для многих репозиториев
 
-- it avoids `uv` at runtime
-- it avoids shell substitutions like `$(git rev-parse ...)`
-- it reduces the chance of hook startup failures such as exit code `127`
+Use the installer script. / Используйте installer script.
 
-## Automatic Parts
+### Generic Example / Общий пример
+
+```bash
+python3 scripts/install_repo_hooks.py \
+  --scan-dir /path/to/parent-with-many-repos \
+  --repo /path/to/extra-repo-1 \
+  --repo /path/to/extra-repo-2 \
+  --vault /path/to/shared-vault
+```
+
+What it does / Что он делает:
+- scans immediate child repos from `--scan-dir`
+- adds explicit repos from `--repo`
+- creates `.codex/config.toml`
+- creates `.codex/hooks.json`
+- writes `.codex/vault.local` if `--vault` is passed
+- replaces old empty `.codex` placeholder files with a real `.codex/` directory
+
+### Multi-Repo Product Example / Пример для multi-repo продукта
+
+```bash
+python3 scripts/install_repo_hooks.py \
+  --scan-dir /path/to/product-repos \
+  --repo /path/to/local-cluster-repo \
+  --repo /path/to/legacy-backend-repo \
+  --repo /path/to/api-repo \
+  --repo /path/to/infra-repo \
+  --repo /path/to/service-repo \
+  --vault /path/to/shared-product-vault
+```
+
+This connects:
+- all git repos directly inside `/path/to/product-repos`
+- one local cluster repo
+- any extra backend, API, infra, or service repos listed with `--repo`
+- one shared external vault for the whole product
+
+## 5. How Hook Routing Works / Как работает маршрутизация hooks
+
+The installer writes hook commands that point back to this compiler repo. / Installer пишет hook-команды, которые указывают обратно на этот compiler repo.
+
+Example shape / Общая форма:
+
+```bash
+env KB_PROJECT_ROOT=/path/to/work-repo python3 /path/to/codex-memory-compiler/hooks/stop.py
+```
+
+Important detail / Важная деталь:
+- `KB_PROJECT_ROOT` tells the compiler which repo's `.codex/vault.local` should be used
+- this allows one compiler repo to serve many work repos safely
+
+## 6. What Happens During A Session / Что происходит во время сессии
 
 ### SessionStart
 
-[hooks/session-start.py](/home/i/IdeaProjects/codex-memory-compiler/hooks/session-start.py) runs when Codex starts or resumes a session.
-
-It:
-
-- reads `knowledge/index.md` if it exists
-- reads the tail of the most recent daily log
-- returns JSON that Codex can inject into the model context
-
-If the knowledge base is empty, SessionStart still succeeds and simply injects an empty-state context.
+- reads `knowledge/index.md`
+- reads the tail of the latest daily log
+- injects both into the new Codex session
 
 ### Stop
 
-[hooks/stop.py](/home/i/IdeaProjects/codex-memory-compiler/hooks/stop.py) runs after each completed turn.
+- reads recent transcript lines
+- writes a temporary context file
+- launches `flush.py` in the background
+- never blocks the user turn on purpose
 
-It:
+### Flush
 
-- reads the transcript path provided by Codex
-- extracts a small recent window of user/assistant turns
-- writes a temporary markdown context file into `scripts/`
-- spawns `scripts/flush.py` as a detached background process
-- returns `{"continue": true}` so the Codex turn finishes normally
-
-The detach matters. Without it, `flush.py` can die together with the hook process before memory is written.
-
-### Background Flush
-
-[scripts/flush.py](/home/i/IdeaProjects/codex-memory-compiler/scripts/flush.py) runs in the background.
-
-It:
-
-- deduplicates repeated flushes for the same `session_id + turn_id`
-- reads the tail of today's daily log to avoid adding the same memory twice
-- runs `codex exec`
+- deduplicates repeated turns
+- asks `codex exec` what is worth saving
 - appends durable notes into `daily/YYYY-MM-DD.md`
-- after the configured hour, may trigger `compile.py` automatically
-
-If `flush.py` succeeds, the temporary `stop-flush-...md` file is deleted. If one remains behind, the background process likely never finished.
-
-## Manual Commands
-
-You can run everything manually without relying on hooks.
+- triggers `compile.py` if today's daily log changed
 
 ### Compile
+
+- updates `knowledge/index.md`
+- creates or updates `knowledge/concepts/`
+- creates `knowledge/connections/` when needed
+- appends to `knowledge/log.md`
+
+## 7. Daily Workflow / Ежедневный workflow
+
+1. Open any connected repo in Codex. / Откройте любой подключенный репозиторий в Codex.
+2. Work normally. / Работайте как обычно.
+3. Let Stop hook capture durable knowledge. / Stop hook сам сохранит важные знания.
+4. Open the vault in Obsidian if you want to browse the wiki. / При желании откройте vault в Obsidian.
+5. Run manual commands when you need direct control. / При необходимости запускайте ручные команды.
+
+## 8. Manual Commands / Ручные команды
+
+### Compile / Компиляция
 
 ```bash
 python3 scripts/compile.py
@@ -190,180 +192,97 @@ python3 scripts/compile.py --file daily/2026-04-23.md
 python3 scripts/compile.py --dry-run
 ```
 
-Use compile when:
-
-- you added or edited a daily log
-- auto-compilation has not happened yet
-- you want to rebuild after changing article guidance in `AGENTS.md`
-
-### Query
+### Query / Запрос к базе знаний
 
 ```bash
-python3 scripts/query.py "What patterns do I use for auth?"
-python3 scripts/query.py "How are daily logs used in this project?" --file-back
+python3 scripts/query.py "What auth patterns do I use?"
+python3 scripts/query.py "What auth patterns do I use?" --file-back
 ```
 
-`--file-back` does two things on success:
-
-- answers your question
-- creates a Q&A article in `knowledge/qa/`, updates `knowledge/index.md`, and appends to `knowledge/log.md`
-
-If the model call fails, the script now reports that the answer was not filed.
-
-### Lint
+### Lint / Проверка целостности
 
 ```bash
 python3 scripts/lint.py
 python3 scripts/lint.py --structural-only
 ```
 
-Use `--structural-only` when:
-
-- you want a fast free check
-- your Codex usage is low
-- you only care about broken links, orphans, staleness, backlinks, and sparse pages
-
-Use full lint when:
-
-- you want contradiction detection
-- you want the most realistic health check of the knowledge base
-
-## How Retrieval Works
-
-This project is intentionally not RAG-first.
-
-The model reads:
-
-1. `knowledge/index.md`
-2. the relevant articles from `knowledge/concepts/`, `knowledge/connections/`, and `knowledge/qa/`
-3. then synthesizes an answer
-
-This works well at personal-KB scale because the index is small and semantically rich.
-
-## How Writes Are Kept Safe
-
-The model does not edit files directly.
-
-Instead:
-
-- `compile.py` and `query.py --file-back` ask Codex for a structured JSON write plan
-- `scripts/utils.py` validates the operations
-- writes are restricted to `knowledge/`
-
-That protects the repository from accidental model-generated writes outside the knowledge base.
-
-## Day-To-Day Workflow
-
-A practical workflow is:
-
-1. Open the repo in Codex.
-2. Let SessionStart inject the current knowledge base.
-3. Work normally.
-4. Let Stop/flush append durable notes automatically.
-5. Run `python3 scripts/compile.py` when you want those notes turned into articles.
-6. Ask questions through `python3 scripts/query.py`.
-7. Run `python3 scripts/lint.py` periodically.
-
-## Verification Commands
-
-If you want to confirm the installation is healthy:
+### Reinstall Hooks / Переустановить hooks
 
 ```bash
-python3 -m py_compile scripts/*.py hooks/*.py
-python3 -m unittest discover -s tests -v
-python3 hooks/session-start.py
-python3 scripts/query.py "What retrieval approach does this knowledge base prefer?"
+python3 scripts/install_repo_hooks.py --repo /path/to/repo --vault /path/to/vault
 ```
 
-If you want to simulate a Stop hook manually:
+## 9. Vault Resolution / Как выбирается vault
+
+Priority / Приоритет:
+1. `KB_VAULT_DIR`
+2. `.codex/vault.local` under `KB_PROJECT_ROOT`
+3. current compiler repo root
+
+Use cases / Сценарии:
+- one repo only -> do nothing, local storage is fine
+- many repos, one wiki -> use `.codex/vault.local` in each connected repo
+- temporary override -> use `KB_VAULT_DIR`
+
+## 10. Health Check / Быстрая проверка установки
+
+Run / Запустите:
 
 ```bash
-cat >/tmp/sample-transcript.jsonl <<'EOF'
-{"message":{"role":"user","content":"Remember that this project runs through Codex CLI."}}
-{"message":{"role":"assistant","content":"I will preserve that as a durable note if it is worth saving."}}
-EOF
-
-printf '{"session_id":"manual-test","turn_id":"manual-turn","transcript_path":"/tmp/sample-transcript.jsonl"}' \
-  | python3 hooks/stop.py
-```
-
-Then inspect:
-
-- `scripts/flush.log`
-- today's file in `daily/`
-
-## Troubleshooting
-
-### `SessionStart hook (failed) error: hook exited with code 127`
-
-This usually means the hook command referenced something that is not installed or not on `PATH`.
-
-This project now uses:
-
-```text
 python3 hooks/session-start.py
-python3 hooks/stop.py
+python3 scripts/compile.py --dry-run
+python3 scripts/lint.py --structural-only
 ```
 
-So check:
+Look for / Что проверить:
+- `session-start.py` returns JSON
+- `compile.py --dry-run` sees daily logs correctly
+- `lint.py` finishes without path errors
+
+For a connected external repo, also check that its `.codex/` files exist:
 
 ```bash
-python3 --version
-python3 hooks/session-start.py
+ls -la /path/to/repo/.codex
 ```
 
-### `codex exec` says you hit your usage limit
+## 11. Common Problems / Частые проблемы
 
-The project is healthy, but Codex is temporarily refusing model work.
+### `.codex` is a file, not a directory / `.codex` оказался файлом, а не папкой
 
-What still works:
+The installer handles empty placeholder files automatically. / Installer автоматически заменяет пустой placeholder-файл.
 
-- SessionStart local context assembly
-- structural lint
-- local file inspection
+If it is a non-empty file, move it away first. / Если это непустой файл, сначала вручную уберите его.
 
-What waits for limit reset:
-
-- compile
-- query
-- file-back
-- contradiction lint
-- flush extraction
-
-### A `stop-flush-...md` file stays in `scripts/`
-
-That means `flush.py` did not complete.
+### Hooks run but nothing is saved / Hooks отрабатывают, но ничего не сохраняется
 
 Check:
-
-- `scripts/flush.log`
 - `codex login status`
-- whether Codex is rate-limited
+- vault path in `.codex/vault.local`
+- `.memory-compiler/flush.log` inside the active vault
 
-### `knowledge/qa/` did not get a new file after `--file-back`
+### The wrong vault is used / Используется не тот vault
 
-That means the model call failed or was interrupted before write-back.
+Check:
+- `KB_VAULT_DIR`
+- repo-local `.codex/vault.local`
+- hook command contains the correct `KB_PROJECT_ROOT`
 
-Re-run the command and inspect the printed error. The script now explicitly tells you whether the answer was filed.
+### `uv` is missing / Нет `uv`
 
-### Hooks do not fire on Windows
+This is not a blocker. / Это не блокер.
 
-Current Codex docs say hooks are experimental and temporarily disabled on Windows. In that environment, use the scripts manually.
+Use plain Python:
 
-## Files Worth Knowing
+```bash
+python3 -m venv .venv
+.venv/bin/pip install tzdata
+```
 
-- [README.md](/home/i/IdeaProjects/codex-memory-compiler/README.md): short project overview
-- [AGENTS.md](/home/i/IdeaProjects/codex-memory-compiler/AGENTS.md): compiler spec and deep technical reference
-- [scripts/llm.py](/home/i/IdeaProjects/codex-memory-compiler/scripts/llm.py): non-interactive Codex CLI bridge
-- [scripts/flush.py](/home/i/IdeaProjects/codex-memory-compiler/scripts/flush.py): memory extraction + auto-compile trigger
-- [hooks/session-start.py](/home/i/IdeaProjects/codex-memory-compiler/hooks/session-start.py): context injection
-- [hooks/stop.py](/home/i/IdeaProjects/codex-memory-compiler/hooks/stop.py): transcript capture and detached flush launch
+## 12. Recommended Structure For Teams / Рекомендуемая схема для команд
 
-## Operational Notes
-
-- `daily/` and `knowledge/` are gitignored in this repo because they are user-specific generated state.
-- The project works even if those directories do not exist yet; they are created lazily as needed.
-- `uv` is optional. It is useful for development hygiene, but the runtime path intentionally uses plain `python3`.
-- The model used for `codex exec` is controlled by `.codex/config.toml` or your Codex config.
-
-If you need implementation details rather than operator instructions, use [AGENTS.md](/home/i/IdeaProjects/codex-memory-compiler/AGENTS.md).
+- keep this repo as the shared compiler / держите этот репозиторий как общий compiler
+- keep one external vault per product / держите один внешний vault на продукт
+- connect every work repo with `install_repo_hooks.py` / подключайте все рабочие репозитории через installer
+- open the vault in Obsidian for browsing / открывайте vault в Obsidian для навигации
+- keep `daily/` append-only / храните `daily/` как append-only слой
+- let `knowledge/` be the long-term wiki / используйте `knowledge/` как долгоживущую вики

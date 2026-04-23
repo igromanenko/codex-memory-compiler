@@ -1,0 +1,48 @@
+from __future__ import annotations
+
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "scripts"))
+
+import install_repo_hooks
+
+
+class EnsureCodexDirTest(unittest.TestCase):
+    def test_replaces_empty_placeholder_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            placeholder = repo / ".codex"
+            placeholder.write_text("", encoding="utf-8")
+
+            codex_dir = install_repo_hooks.ensure_codex_dir(repo)
+
+            self.assertTrue(codex_dir.is_dir())
+            self.assertEqual(codex_dir, placeholder)
+
+    def test_rejects_non_empty_placeholder_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            placeholder = repo / ".codex"
+            placeholder.write_text("legacy", encoding="utf-8")
+
+            with self.assertRaises(RuntimeError):
+                install_repo_hooks.ensure_codex_dir(repo)
+
+
+class BuildHooksJsonTest(unittest.TestCase):
+    def test_embeds_project_root_env_and_absolute_hook_paths(self) -> None:
+        repo = Path("/tmp/example-repo")
+
+        payload = install_repo_hooks.build_hooks_json(repo)
+
+        self.assertIn("KB_PROJECT_ROOT=/tmp/example-repo", payload)
+        self.assertIn(str(install_repo_hooks.SESSION_START_SCRIPT), payload)
+        self.assertIn(str(install_repo_hooks.STOP_SCRIPT), payload)
+
+
+if __name__ == "__main__":
+    unittest.main()
