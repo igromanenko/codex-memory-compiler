@@ -47,6 +47,10 @@ logging.basicConfig(
 )
 
 
+def is_flush_error(response: str) -> bool:
+    return response.lstrip().startswith("FLUSH_ERROR:")
+
+
 def load_flush_state() -> dict:
     if FLUSH_STATE_FILE.exists():
         try:
@@ -69,7 +73,10 @@ def append_to_daily_log(content: str, section: str = "Session") -> None:
     if not log_path.exists():
         DAILY_DIR.mkdir(parents=True, exist_ok=True)
         log_path.write_text(
-            f"# Daily Log: {today.strftime('%Y-%m-%d')}\n\n## Sessions\n\n## Memory Maintenance\n\n",
+            (
+                f"# Daily Log: {today.strftime('%Y-%m-%d')}\n\n"
+                "## Sessions\n\n## Memory Maintenance\n\n"
+            ),
             encoding="utf-8",
         )
 
@@ -240,15 +247,20 @@ def main():
     # Run the LLM extraction
     response = run_flush(context, read_today_log_tail())
 
+    daily_changed = False
+    should_remove_context = True
+
     # Append to daily log
     if response.strip() == "FLUSH_OK":
         logging.info("Result: FLUSH_OK")
-    elif "FLUSH_ERROR" in response:
+    elif is_flush_error(response):
         logging.error("Result: %s", response)
-        append_to_daily_log(response, "Memory Flush")
+        should_remove_context = False
+        logging.info("Preserving context file for retry: %s", context_file)
     else:
         logging.info("Result: saved to daily log (%d chars)", len(response))
         append_to_daily_log(response, "Session")
+        daily_changed = True
 
     # Update dedup state
     save_flush_state(
@@ -260,11 +272,13 @@ def main():
     )
 
     # Clean up context file
-    context_file.unlink(missing_ok=True)
+    if should_remove_context:
+        context_file.unlink(missing_ok=True)
 
     # Auto-compilation: if today's daily log changed since its last compile,
     # trigger compile.py in the background.
-    maybe_trigger_compilation()
+    if daily_changed:
+        maybe_trigger_compilation()
 
     logging.info("Flush complete for session %s", session_id)
 

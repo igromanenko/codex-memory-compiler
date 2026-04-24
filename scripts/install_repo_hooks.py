@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shlex
 import subprocess
 import tomllib
@@ -13,12 +14,15 @@ COMPILER_ROOT = Path(__file__).resolve().parent.parent
 COMPILER_CONFIG = COMPILER_ROOT / ".codex" / "config.toml"
 SESSION_START_SCRIPT = COMPILER_ROOT / "hooks" / "session-start.py"
 STOP_SCRIPT = COMPILER_ROOT / "hooks" / "stop.py"
+DEFAULT_MODEL = "gpt-5.5"
+DEFAULT_REASONING = "xhigh"
+STALE_DEFAULT_MODELS = {"gpt-5.4"}
 
 
 def load_default_model_settings() -> tuple[str, str]:
     """Reuse the compiler repo's default Codex model settings."""
-    model = "gpt-5.4"
-    reasoning = "medium"
+    model = os.getenv("CODEX_MODEL", "").strip() or DEFAULT_MODEL
+    reasoning = os.getenv("CODEX_REASONING_EFFORT", "").strip() or DEFAULT_REASONING
 
     if not COMPILER_CONFIG.exists():
         return model, reasoning
@@ -26,7 +30,11 @@ def load_default_model_settings() -> tuple[str, str]:
     config = tomllib.loads(COMPILER_CONFIG.read_text(encoding="utf-8"))
     loaded_model = config.get("model")
     loaded_reasoning = config.get("model_reasoning_effort")
-    if isinstance(loaded_model, str) and loaded_model.strip():
+    if (
+        isinstance(loaded_model, str)
+        and loaded_model.strip()
+        and loaded_model.strip() not in STALE_DEFAULT_MODELS
+    ):
         model = loaded_model.strip()
     if isinstance(loaded_reasoning, str) and loaded_reasoning.strip():
         reasoning = loaded_reasoning.strip()

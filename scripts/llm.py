@@ -15,6 +15,8 @@ from typing import Any
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 CODEX_CONFIG_FILE = ROOT_DIR / ".codex" / "config.toml"
+DEFAULT_MODEL = "gpt-5.5"
+STALE_DEFAULT_MODELS = {"gpt-5.4"}
 
 
 @dataclass(slots=True)
@@ -52,10 +54,14 @@ def _resolve_model(model: str | None = None) -> str | None:
         except (tomllib.TOMLDecodeError, OSError):
             return None
         configured_model = config.get("model")
-        if isinstance(configured_model, str):
+        if (
+            isinstance(configured_model, str)
+            and configured_model.strip()
+            and configured_model.strip() not in STALE_DEFAULT_MODELS
+        ):
             return configured_model
 
-    return None
+    return DEFAULT_MODEL
 
 
 @lru_cache(maxsize=1)
@@ -116,6 +122,23 @@ def _normalize_usage(raw_usage: dict[str, Any] | None) -> UsageStats:
     )
 
 
+def _content_blocks_to_text(content: object) -> str:
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+
+    parts: list[str] = []
+    for block in content:
+        if isinstance(block, str):
+            parts.append(block)
+        elif isinstance(block, dict):
+            text = block.get("text")
+            if isinstance(text, str):
+                parts.append(text)
+    return "\n".join(parts)
+
+
 def _parse_exec_output(stdout: str) -> tuple[str, UsageStats, str | None]:
     """Parse Codex JSONL output and extract the final assistant message."""
     last_message = ""
@@ -138,7 +161,21 @@ def _parse_exec_output(stdout: str) -> tuple[str, UsageStats, str | None]:
             item = event.get("item", {})
             if item.get("type") == "agent_message":
                 text = item.get("text")
-                if isinstance(text, str):
+                if not isinstance(text, str):
+                    text = _content_blocks_to_text(item.get("content"))
+                if text:
+                    last_message = text
+            continue
+
+        if event_type == "response_item":
+            payload = event.get("payload", {})
+            if (
+                isinstance(payload, dict)
+                and payload.get("type") == "message"
+                and payload.get("role") == "assistant"
+            ):
+                text = _content_blocks_to_text(payload.get("content"))
+                if text:
                     last_message = text
             continue
 

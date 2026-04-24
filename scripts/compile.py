@@ -14,6 +14,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -61,12 +62,48 @@ COMPILE_PLAN_SCHEMA = {
 }
 
 
+FLUSH_ERROR_ENTRY_RE = re.compile(
+    r"\n### Memory Flush \([^)]+\)\n\nFLUSH_ERROR:.*?(?=\n### |\Z)",
+    re.DOTALL,
+)
+
+
+def strip_flush_error_entries(content: str) -> str:
+    """Remove operational flush failures before asking the model to compile knowledge."""
+    return FLUSH_ERROR_ENTRY_RE.sub("\n", content).strip() + "\n"
+
+
+def has_compilable_entries(content: str) -> bool:
+    return "### " in strip_flush_error_entries(content)
+
+
+def mark_log_skipped(state: dict, log_path: Path, reason: str) -> None:
+    rel_path = log_path.name
+    state.setdefault("ingested", {})[rel_path] = {
+        "hash": file_hash(log_path),
+        "compiled_at": now_iso(),
+        "cost_usd": None,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "model": None,
+        "skipped": reason,
+    }
+    save_state(state)
+
+
 def compile_daily_log(log_path: Path, state: dict) -> int:
     """Compile a single daily log into knowledge articles.
 
     Returns the total token count reported by Codex CLI.
     """
-    log_content = log_path.read_text(encoding="utf-8")
+    raw_log_content = log_path.read_text(encoding="utf-8")
+    if not has_compilable_entries(raw_log_content):
+        print("  Skipped: no durable entries after filtering flush errors.")
+        mark_log_skipped(state, log_path, "no_durable_entries")
+        return 0
+
+    log_content = strip_flush_error_entries(raw_log_content)
     schema = AGENTS_FILE.read_text(encoding="utf-8")
     wiki_index = read_wiki_index()
 
